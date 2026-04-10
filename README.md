@@ -265,16 +265,6 @@ Important gateway endpoints:
 - `POST /api/mcp-log`
 - `WS /ws`
 
-## Notes Before Publishing
-
-Recommended cleanup before pushing to GitHub:
-
-- Do not commit real API keys in `.env`
-- Add screenshots or a short demo GIF for the dashboard
-- Replace placeholder paths with your actual install/run examples
-- Add a `LICENSE` file if you want the MIT section to be explicit on GitHub
-- Add OS-specific setup notes if you expect users outside your own environment
-
 ## License
 
 MIT
