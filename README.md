@@ -95,8 +95,35 @@ Notes:
 
 ### 3. Start the stack
 
+Before starting PruneTool, decide which project folder you want it to index. This is required.
+
+PruneTool does not index itself by default. It indexes the target codebase pointed to by `PRUNE_CODEBASE_ROOT`, or in some workflows, the folder you launch it from.
+
+Recommended Windows workflow:
+
+1. Open a terminal in the project you want to index
+2. Set `PRUNE_CODEBASE_ROOT` to that project path
+3. Start PruneTool using the Python inside the `C:\prunetool\.venv`
+
+PowerShell example:
+
+```powershell
+$env:PRUNE_CODEBASE_ROOT="C:\path\to\your\project"
+C:\prunetool\.venv\Scripts\python.exe C:\prunetool\start_mcp.py
+```
+
+Example with your current project:
+
+```powershell
+$env:PRUNE_CODEBASE_ROOT="C:\Users\yourname\source\my-app"
+C:\prunetool\.venv\Scripts\python.exe C:\prunetool\start_mcp.py
+```
+
+If you are already inside the target project folder, this also works:
+
 ```bash
-python start_mcp.py
+cd C:/path/to/your/project
+C:/prunetool/.venv/Scripts/python.exe C:/prunetool/start_mcp.py
 ```
 
 This starts:
@@ -104,6 +131,12 @@ This starts:
 - Gateway UI/API on `http://localhost:8000`
 - MCP server on `http://localhost:8765/mcp`
 - Local proxy on `http://localhost:8090`
+
+Important:
+
+- If `PRUNE_CODEBASE_ROOT` points to the wrong folder, PruneTool will index the wrong codebase
+- Users should set the path to the app or repository they actually want their agents to work on
+- After startup, open the dashboard and run a project scan for that target folder
 
 ### 4. Scan the project
 
