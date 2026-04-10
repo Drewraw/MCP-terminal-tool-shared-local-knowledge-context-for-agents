@@ -1,0 +1,53 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python:*)",
+      "Bash(PRUNE_CODEBASE_ROOT=\"C:/Newexpw/new/experiment\" .venv/Scripts/python:*)",
+      "Bash(curl -s -X POST http://localhost:8000/prune -H \"Content-Type: application/json\" -d '{\"user_query\": \"The app crashes on Android 15 when starting foreground service for background video upload while also receiving a push notification from Firebase Cloud Messaging. The crash log shows SecurityException in MediaProjection. How do all these systems interact and where is the race condition?\", \"file_paths\": [], \"goal_hint\": \"\", \"max_tokens\": 80000}')",
+      "Bash(python -c \"import sys,json; r=json.load\\(sys.stdin\\); print\\(f'Files: {r[\\\\\"stats\\\\\"][\\\\\"files_processed\\\\\"]}, Symbols: {r[\\\\\"stats\\\\\"][\\\\\"symbols_matched\\\\\"]}, Ratio: {r[\\\\\"stats\\\\\"][\\\\\"compression_ratio\\\\\"]}'\\); [print\\(f'  {f[\\\\\"file_path\\\\\"]}'\\) for f in r['pruned_files']]\")",
+      "Bash(.venv/Scripts/pip search:*)",
+      "Bash(.venv/Scripts/pip install:*)",
+      "Bash(xargs ls:*)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(f['file_path']\\) for f in d['pruned_files']]\")",
+      "Bash(node:*)",
+      "Bash(powershell -Command 'Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue | Select-Object OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }')",
+      "Bash(PRUNE_CODEBASE_ROOT='C:\\\\Newexpw\\\\new\\\\experiment' .venv/Scripts/python.exe -m uvicorn server.gateway:app --port 8000)",
+      "Bash(.venv/Scripts/python.exe -c ':*)",
+      "Bash(curl -s -X POST http://localhost:8000/prune -H \"Content-Type: application/json\" -d '{\"user_query\":\"How does the incident detection engine work end-to-end? Trace the full flow from RSS feed ingestion and Tavily search through Groq LLM processing to the final alert shown in the Flutter UI.\",\"file_paths\":[],\"goal_hint\":\"\",\"max_tokens\":80000}')",
+      "Bash(.venv/Scripts/pip.exe install:*)",
+      "Bash(PYTHONUTF8=1 PRUNE_CODEBASE_ROOT='C:\\\\Newexpw\\\\new\\\\experiment' .venv/Scripts/python.exe -m uvicorn server.gateway:app --port 8000)",
+      "Bash(curl -s http://localhost:8000/health)",
+      "Bash(curl -s http://localhost:8000/status)",
+      "Bash(python -m json.tool)",
+      "Bash(curl:*)",
+      "Bash(tasklist)",
+      "Bash(PYTHONUTF8=1 .venv/Scripts/python.exe -m indexer.folder_mapper \"C:\\\\Newexpw\\\\new\\\\experiment\")",
+      "Bash(taskkill //F //IM python.exe)",
+      "Bash(npm install:*)",
+      "Bash(npm run:*)",
+      "Bash(PRUNE_CODEBASE_ROOT=\"C:/Newexpw/new/experiment\" C:/prunetool/.venv/Scripts/python.exe -m server.gateway)",
+      "Read(//c/Newexpw/new/experiment/**)",
+      "Bash(PRUNE_CODEBASE_ROOT=\"C:/Newexpw/new/experiment\" C:/prunetool/.venv/Scripts/python.exe C:/prunetool/server/gateway.py)",
+      "Bash(C:/prunetool/.venv/Scripts/python.exe -c ':*)",
+      "Bash(python -m py_compile \"C:/prunetool/mcp_server.py\")",
+      "Bash(python -m py_compile \"C:/prunetool/server/gateway.py\")",
+      "Bash(python -m py_compile \"C:/prunetool/start_mcp.py\")",
+      "Bash(python -c \"from pruner.pruning_engine import PruningEngine; print\\('OK'\\)\")",
+      "Bash(python -c \"from pruner.auto_annotator import AutoAnnotator; from pruner.pruning_engine import PruningEngine; from server.gateway import _annotate_all_files_background; print\\('All imports OK'\\)\")",
+      "Bash(python -c \"from pruner.auto_annotator import AutoAnnotator; print\\('OK'\\)\"ect scan sync time)",
+      "mcp__prunetool__session_start",
+      "mcp__prunetool__describe_project",
+      "mcp__prunetool__report_tokens"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "prunetool"
+  ],
+  "mcpServers": {
+    "prunetool": {
+      "type": "http",
+      "url": "http://localhost:8765/mcp"
+    }
+  }
+}

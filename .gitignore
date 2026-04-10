@@ -1,0 +1,21 @@
+.env
+.env.*
+!.env.example
+
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+ui/node_modules/
+ui/dist/
+
+.prunetool/
+prune library/
+
+token_log.jsonl
+
+.DS_Store
+Thumbs.db

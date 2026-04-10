@@ -1,0 +1,16 @@
+{
+  "name": "context-aware-pruning-gateway",
+  "version": "1.0.0",
+  "description": "Context-Aware Pruning Middleware Gateway — SWE-Pruner inspired context optimization for LLM coding agents",
+  "main": "server/gateway.py",
+  "scripts": {
+    "server": "cd server && uvicorn gateway:app --reload --port 8420",
+    "index": "cd server && python -m indexer.skeletal_indexer",
+    "ui:dev": "cd ui && npm run dev",
+    "ui:build": "cd ui && npm run build",
+    "ui:install": "cd ui && npm install",
+    "setup": "pip install -r server/requirements.txt && npm run ui:install"
+  },
+  "keywords": ["pruning", "context", "llm", "tree-sitter", "prompt-cache"],
+  "license": "MIT"
+}
