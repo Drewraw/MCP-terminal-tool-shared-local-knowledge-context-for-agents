@@ -269,4 +269,4 @@ Important gateway endpoints:
 
 ## License
 
-MIT
+Proprietary. See [LICENSE](/C:/prunetool/LICENSE).

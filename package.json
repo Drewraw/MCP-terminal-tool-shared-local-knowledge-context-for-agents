@@ -12,5 +12,5 @@
     "setup": "pip install -r server/requirements.txt && npm run ui:install"
   },
   "keywords": ["pruning", "context", "llm", "tree-sitter", "prompt-cache"],
-  "license": "MIT"
+  "license": "UNLICENSED"
 }
