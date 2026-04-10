@@ -55,7 +55,8 @@ PruneTool can auto-register MCP configuration for supported tools during startup
 
 - Python 3.10+
 - Node.js 18+
-- A Groq API key if you want Scout-based ranking via Groq
+- A Groq Cloud API key for Scout-based ranking
+- Groq model: `llama-3.1-8b-instant` (the project was tuned against this model)
 
 ### 1. Install dependencies
 
@@ -80,6 +81,7 @@ Create a `.env` file:
 
 ```env
 GROQ_API_KEY=your_groq_key_here
+# Use Groq model: llama-3.1-8b-instant
 PRUNE_CODEBASE_ROOT=/path/to/project
 
 # Optional proxy settings for live token metering
@@ -91,7 +93,7 @@ GEMINI_API_BASE_URL=http://localhost:8090/v1
 Notes:
 
 - `PRUNE_CODEBASE_ROOT` is the project PruneTool will index and monitor
-- If Groq is not configured, the system falls back to Ollama or keyword-only selection where available
+- Use Groq Cloud with `llama-3.1-8b-instant`; PruneTool was tuned against this model
 
 ### 3. Start the stack
 
