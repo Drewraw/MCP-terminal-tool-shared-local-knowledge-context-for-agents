@@ -53,17 +53,29 @@ PruneTool can auto-register MCP configuration for supported tools during startup
 
 ### Requirements
 
-- Python 3.10+
+- Python 3.10+ installed on your machine
 - Node.js 18+
 - A Groq Cloud API key for Scout-based ranking
 - Groq model: `llama-3.1-8b-instant` (the project was tuned against this model)
 
 ### 1. Install dependencies
 
+Install Python first if it is not already available on your system. On Windows, verify that either `py` or `python` works in PowerShell before creating the virtual environment.
+
 Backend:
 
-```bash
-pip install -r server/requirements.txt
+```powershell
+py -3.10 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r server\requirements.txt
+```
+
+If `py -3.10` is not available but `python` is installed, use:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r server\requirements.txt
 ```
 
 Frontend:
@@ -82,7 +94,7 @@ Create a `.env` file:
 ```env
 GROQ_API_KEY=your_groq_key_here
 # Use Groq model: llama-3.1-8b-instant
-PRUNE_CODEBASE_ROOT=/path/to/project
+PRUNE_CODEBASE_ROOT=/path/to/project 
 
 # Optional proxy settings for live token metering
 ANTHROPIC_BASE_URL=http://localhost:8090/v1
@@ -99,26 +111,33 @@ Notes:
 
 Before starting PruneTool, decide which project folder you want it to index. This is required.
 
-PruneTool does not index itself by default. It indexes the target codebase pointed to by `PRUNE_CODEBASE_ROOT`, or in some workflows, the folder you launch it from.
+PruneTool and the project you want to index are usually in different folders.
+
+- `C:\prunetool` is the PruneTool installation
+- your target project is the app or repository you actually want PruneTool to index
+
+In this README, `C:/prunetool` or `C:\prunetool` is only an example path from the author's machine. On your system, this path will be the folder name and location where you downloaded or cloned the PruneTool GitHub repo, for example `C:/project-context-mcp` or `D:/tools/prunetool-main`.
+
+PruneTool does not index itself by default. The user should open VS Code for the target project, use the VS Code terminal inside that target project folder, then start `C:\prunetool\start_mcp.py` using the Python from `C:\prunetool\.venv`.
 
 Recommended Windows workflow:
 
-1. Open a terminal in the project you want to index
-2. Set `PRUNE_CODEBASE_ROOT` to that project path
-3. Start PruneTool using the Python inside the `C:\prunetool\.venv`
+1. Open the target project in VS Code
+2. Open the VS Code terminal in that target project folder
+3. Run PruneTool from there using the Python inside `C:\prunetool\.venv`
+4. If needed, set `PRUNE_CODEBASE_ROOT` explicitly to the same target project path
 
-PowerShell example:
+PowerShell example when the target project is `C:\Newexpw\new\experiment`:
 
 ```powershell
-$env:PRUNE_CODEBASE_ROOT="C:\path\to\your\project"
-C:\prunetool\.venv\Scripts\python.exe C:\prunetool\start_mcp.py
+PS C:\Newexpw\new\experiment> C:/prunetool/.venv/Scripts/python.exe C:/prunetool/start_mcp.py
 ```
 
-Example with your current project:
+Equivalent form with `PRUNE_CODEBASE_ROOT` set explicitly:
 
 ```powershell
-$env:PRUNE_CODEBASE_ROOT="C:\Users\yourname\source\my-app"
-C:\prunetool\.venv\Scripts\python.exe C:\prunetool\start_mcp.py
+$env:PRUNE_CODEBASE_ROOT="C:\Newexpw\new\experiment"
+C:/prunetool/.venv/Scripts/python.exe C:/prunetool/start_mcp.py
 ```
 
 If you are already inside the target project folder, this also works:
@@ -137,6 +156,8 @@ This starts:
 Important:
 
 - If `PRUNE_CODEBASE_ROOT` points to the wrong folder, PruneTool will index the wrong codebase
+- If you launch the command from the wrong folder without setting `PRUNE_CODEBASE_ROOT`, PruneTool may index the wrong project
+- To follow file changes in the correct app, start the MCP server from the target project's VS Code terminal
 - Users should set the path to the app or repository they actually want their agents to work on
 - After startup, open the dashboard and run a project scan for that target folder
 
