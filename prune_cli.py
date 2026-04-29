@@ -876,6 +876,86 @@ def cmd_status(config: dict, env: dict):
     print()
 
 
+def _scan_age_seconds() -> Optional[float]:
+    """
+    Returns how many seconds ago the last scan ran.
+    Returns None if last_scan.json doesn't exist or can't be parsed.
+    """
+    info = _last_scan_info()
+    indexed_at = info.get("indexed_at")
+    if not indexed_at:
+        return None
+    try:
+        from datetime import timezone
+        ts = datetime.datetime.fromisoformat(indexed_at)
+        # make aware if naive
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        now = datetime.datetime.now(timezone.utc)
+        return (now - ts).total_seconds()
+    except Exception:
+        return None
+
+
+def _cmd_describe(gw_up: bool) -> str:
+    """
+    /describe handler — checks scan freshness, optionally rescans,
+    then loads terminal_context.md into session cache.
+    Returns the project_context string (empty string on failure).
+    """
+    if not gw_up:
+        print("[prune] Gateway is not running — cannot load project context.")
+        print("        Start prunetool.exe first, then type /describe again.")
+        return ""
+
+    # ── No index at all → auto scan ───────────────────────────────────
+    if not _project_index_ready():
+        croot = os.environ.get("PRUNE_CODEBASE_ROOT", str(Path.cwd()))
+        print(f"[prune] No project index found for: {croot}")
+        print("[prune] Running project scan now...\n")
+        if _trigger_project_scan():
+            _wait_for_scan()
+        else:
+            print("[prune] Could not trigger scan — open http://localhost:8000 and click Scan Project.")
+            return ""
+
+    # ── Index exists — check age ──────────────────────────────────────
+    age = _scan_age_seconds()
+    info = _last_scan_info()
+    file_count = info.get("file_count", "?")
+    sym_count  = info.get("total_symbols", "?")
+
+    if age is not None and age > 3600:
+        hours = int(age // 3600)
+        mins  = int((age % 3600) // 60)
+        age_str = f"{hours}h {mins}m ago" if hours else f"{mins}m ago"
+        print(f"[prune] Last scan was {age_str}  ({file_count} files, {sym_count:,} symbols)")
+        try:
+            answer = input("[prune] Rescan project before loading context? (y/n): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        if answer == "y":
+            print("[prune] Rescanning...\n")
+            if _trigger_project_scan():
+                _wait_for_scan()
+            else:
+                print("[prune] Scan failed — loading existing context.")
+    else:
+        if age is not None:
+            mins = int(age // 60)
+            print(f"[prune] Project index is fresh ({mins}m old) — {file_count} files, {sym_count:,} symbols")
+
+    # ── Load context ──────────────────────────────────────────────────
+    print("[prune] Loading project context... ", end="", flush=True)
+    ctx = _load_project_context()
+    if ctx:
+        tok_est = len(ctx) // 4
+        print(f"done (~{tok_est:,} tokens)  — project context is now active for this session.\n")
+    else:
+        print("failed — terminal_context.md not found. Try rescanning.")
+    return ctx
+
+
 def _launch_gateway_window():
     """
     Open a new terminal window running prunetool.exe so the user can see
@@ -920,7 +1000,7 @@ def cmd_chat(config: dict, env: dict, stats: DailyStats):
         if not gw_up:
             print("\n  [prune] Gateway did not start — continuing without codebase context.\n")
 
-    # ── Step 2: ensure project index exists ───────────────────────────
+    # ── Step 2: ensure a project index exists (first-time only) ──────
     project_context = ""
     if gw_up:
         if not _project_index_ready():
@@ -932,30 +1012,15 @@ def cmd_chat(config: dict, env: dict, stats: DailyStats):
             else:
                 print("  [prune] Could not trigger scan — open http://localhost:8000 and click Scan Project.\n")
 
-        # ── Step 3: load terminal_context.md into session cache ───────
-        if _project_index_ready():
-            info = _last_scan_info()
-            scanned_at  = info.get("indexed_at", "unknown")[:10]  # date only
-            file_count  = info.get("file_count", "?")
-            sym_count   = info.get("total_symbols", "?")
-            print(f"  [prune] Project index found — {file_count} files, {sym_count:,} symbols (scanned {scanned_at})")
-            print(f"  [prune] Loading project context... ", end="", flush=True)
-            project_context = _load_project_context()
-            if project_context:
-                tok_est = len(project_context) // 4
-                print(f"done (~{tok_est:,} tokens)\n")
-            else:
-                print("not found — run a project scan first.\n")
-
     # Copilot-style model picker on every session start
     chosen_alias = _model_picker(config, env, stats)
     _set_active_model_alias(chosen_alias)
     active_alias = chosen_alias
 
     if active_alias == "auto":
-        print("  Type /model <name> to lock to a model, /quit to exit\n")
+        print("  Type /describe to load project context, /model <name> to switch, /quit to exit\n")
     else:
-        print("  Type /model auto to switch back to auto-routing, /quit to exit\n")
+        print("  Type /describe to load project context, /model auto for auto-routing, /quit to exit\n")
 
     history: list[dict] = []
 
@@ -987,6 +1052,10 @@ def cmd_chat(config: dict, env: dict, stats: DailyStats):
         if prompt == "/clear":
             history.clear()
             print("[prune] Conversation history cleared.")
+            continue
+
+        if prompt == "/describe":
+            project_context = _cmd_describe(gw_up)
             continue
 
         # ── Get pruned context ────────────────────────────────────────
@@ -1063,6 +1132,7 @@ PruneTool CLI
   prune status            Show gateway + active model status
 
 Inside chat:
+  /describe               Load project context into this session
   /model <alias>          Switch model mid-session
   /models                 Show model list
   /status                 Show status
