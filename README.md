@@ -63,25 +63,56 @@ PruneTool auto-detects which CLIs are installed and uses them. If you have both 
 
 ## How It Works
 
+### Step 1 — Project scan (runs once, then stays updated)
+
+When you first point PruneTool at your project, it automatically:
+
+```
+prunetool.exe starts
+        ↓
+Scans every file in your project
+   → builds skeleton.json       (every function, class, enum with line numbers)
+   → builds folder_map.json     (which folders import from which)
+   → writes auto_annotations.json  (one-sentence AI summary per file via Groq)
+   → writes terminal_context.md    (combined snapshot for AI agents)
+        ↓
+File watcher runs in background
+   → detects file changes
+   → rebuilds skeleton + folder_map + terminal_context automatically
+   → dashboard shows rescan badge when prune library is updated
+```
+
+### Step 2 — Every prompt you send
+
 ```
 you type a question
         ↓
-PruneTool Gateway
-   1. Reads your codebase index (skeleton of all symbols)
-   2. Scout model picks the relevant files for your question
-   3. Extracts only the relevant sections (not the whole file)
-   4. Assembles a compact context (~3-8K tokens instead of 100K+)
+Scout model (Groq Llama 8B — fast, cheap)
+   1. Pre-filters: scores all symbols by keyword overlap → top 1500
+   2. Each symbol shown with: file path, line number, purpose hint, enum values
+   3. Scout picks the ~5-10 most relevant files for your question
+   4. Extracts only the relevant sections from those files
+   5. Assembles compact context: ~3-8K tokens instead of 100K+
         ↓
-Model picker / auto-router
-   - simple question  → fast cheap model (Haiku, Gemini Flash)
-   - medium question  → balanced model (Sonnet, GPT-4o)
-   - complex question → powerful model (Opus, o1)
-   - checks daily token budget — warns at 90%, switches at 95%
+Complexity classifier (also Groq Llama — same fast call)
+   - simple  → fast cheap model (Haiku, Gemini Flash, Llama)
+   - medium  → balanced model (Sonnet, GPT-4o)
+   - complex → powerful model (Opus, o1)
+   - checks daily token budget → warns at 90%, switches model at 95%
         ↓
-LLM answers with full codebase awareness
+Your chosen LLM gets: pruned context + your question
+        ↓
+Answer streamed back to your terminal
 ```
 
-**Token savings:** a 100K-token codebase gets reduced to ~3-8K tokens per query. Typical saving: ~$22/month on Claude API costs.
+### Why this matters
+
+| | Without PruneTool | With PruneTool |
+|---|---|---|
+| Context sent per query | ~100K tokens (whole codebase) | ~3-8K tokens (relevant only) |
+| Scout cost (Groq) | — | ~$0.001 per query |
+| Claude API savings | — | ~$22/month at 50 queries/day |
+| Model awareness | none — you explain everything | full — codebase always loaded |
 
 ---
 
