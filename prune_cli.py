@@ -1001,7 +1001,6 @@ def cmd_chat(config: dict, env: dict, stats: DailyStats):
             print("\n  [prune] Gateway did not start — continuing without codebase context.\n")
 
     # ── Step 2: ensure a project index exists (first-time only) ──────
-    project_context = ""
     if gw_up:
         if not _project_index_ready():
             croot = os.environ.get("PRUNE_CODEBASE_ROOT", str(Path.cwd()))
@@ -1055,7 +1054,11 @@ def cmd_chat(config: dict, env: dict, stats: DailyStats):
             continue
 
         if prompt == "/describe":
-            project_context = _cmd_describe(gw_up)
+            ctx = _cmd_describe(gw_up)
+            if ctx:
+                # Inject into history ONCE — LLM remembers for whole session
+                history.append({"role": "user",      "content": f"## Project Context\n{ctx}"})
+                history.append({"role": "assistant", "content": "Got it. I now have full context of your project — folder structure, symbols, and annotations loaded. Ask me anything about your codebase."})
             continue
 
         # ── Get pruned context ────────────────────────────────────────
@@ -1089,19 +1092,14 @@ def cmd_chat(config: dict, env: dict, stats: DailyStats):
             "You are a coding assistant with deep knowledge of the user's codebase.",
             "Answer concisely and directly. Refer to specific files and line numbers when relevant.",
         ]
-        # Layer 1: full project context loaded once at session start
-        if project_context:
-            system_parts.append(
-                f"\n## Project Overview (loaded once for this session)\n{project_context}"
-            )
-        # Layer 2: per-prompt pruned snippets — only the relevant code for this question
+        # Per-prompt pruned snippets — only relevant code for this question
         if ctx_text:
             system_parts.append(
                 f"\n## Relevant Code for This Question (pruned by Scout)\n{ctx_text}"
             )
 
         messages = [{"role": "system", "content": "\n".join(system_parts)}]
-        messages += history
+        messages += history  # project_context lives here after /describe — sent once
         messages.append({"role": "user", "content": prompt})
 
         # ── Stream response ───────────────────────────────────────────
