@@ -362,13 +362,13 @@ def _generate_llm_config(env: dict):
 
     # Write the config file
     lines = [
-        f'// provider: {provider}',
+        f'// provider: {provider}   ← your preferred provider for this project (anthropic | openai | gemini | groq)',
         f'//',
         f'// Access methods:',
         *access_lines,
         f'//',
         f'// PruneTool uses CLI first, API key as fallback.',
-        f'// To switch provider: delete this file and re-run prune chat.',
+        f'// To switch provider: update the provider line above and re-run prune chat.',
         "module.exports = {", "  models: ["
     ]
     for m in models:
