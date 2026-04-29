@@ -351,14 +351,15 @@ class Broker:
     def available_models(self) -> list[dict]:
         return [m for m in self.models if _get_key(m["provider"], self.env)]
 
-    def classify_prompt(self, prompt: str, context_tokens: int) -> str:
+    def classify_prompt(self, prompt: str, context_tokens: int,
+                        file_count: int = 0, active_folders: list = None) -> str:
         """
-        Use Groq llama-instant to classify complexity.
-        Falls back to keyword heuristic if Groq key missing.
+        Classify complexity from Scout structure (file/folder spread).
+        Falls back to keyword heuristic if Scout returned nothing.
+        Groq LLM classifier removed — structural analysis is more accurate.
         """
-        groq_key = _get_key("groq", self.env)
-        if groq_key:
-            return self._classify_via_groq(prompt, context_tokens, groq_key)
+        if file_count > 0 or active_folders:
+            return _classify_by_structure(file_count, active_folders or [])
         return self._classify_heuristic(prompt, context_tokens)
 
     def _classify_via_groq(self, prompt: str, context_tokens: int, api_key: str) -> str:
@@ -543,20 +544,39 @@ def _load_project_context() -> str:
     return ""
 
 
-def _get_pruned_context(prompt: str) -> tuple[str, int]:
-    """Returns (context_text, token_estimate). Empty string if gateway down."""
+def _get_pruned_context(prompt: str) -> tuple[str, int, int, list[str]]:
+    """Returns (context_text, token_estimate, file_count, active_folder_ids)."""
     try:
         resp = httpx.post(
             f"{GATEWAY_URL}/prune",
             json={"query": prompt},
             timeout=15.0,
         )
-        data = resp.json()
-        ctx  = data.get("context", "")
-        toks = data.get("tokens_used", len(ctx) // 4)
-        return ctx, toks
+        data     = resp.json()
+        ctx      = data.get("assembled_prompt", data.get("context", ""))
+        toks     = data.get("cache_info", {}).get("total_tokens", len(ctx) // 4)
+        files    = len(data.get("pruned_files", []))
+        folders  = data.get("active_folder_ids", [])
+        return ctx, toks, files, folders
     except Exception:
-        return "", 0
+        return "", 0, 0, []
+
+
+def _classify_by_structure(file_count: int, active_folders: list[str]) -> str:
+    """
+    Classify query complexity from Scout results — no LLM call needed.
+    Counts how many distinct folders Scout selected for this query.
+
+    1 folder, 1-2 files  → simple
+    2-3 folders           → medium
+    4+ folders            → heavy
+    """
+    folder_count = len(active_folders)
+    if folder_count >= 4 or file_count >= 6:
+        return "heavy"
+    if folder_count >= 2 or file_count >= 3:
+        return "medium"
+    return "simple"
 
 
 # ── CLI backend (for subscription users without API keys) ─────────────
@@ -1062,20 +1082,20 @@ def cmd_chat(config: dict, env: dict, stats: DailyStats):
             continue
 
         # ── Get pruned context ────────────────────────────────────────
-        ctx_text, ctx_tokens = ("", 0)
+        ctx_text, ctx_tokens, file_count, active_folders = ("", 0, 0, [])
         if gw_up:
-            ctx_text, ctx_tokens = _get_pruned_context(prompt)
+            ctx_text, ctx_tokens, file_count, active_folders = _get_pruned_context(prompt)
 
         # ── Pick model ────────────────────────────────────────────────
         if active_alias == "auto":
-            complexity = broker.classify_prompt(prompt, ctx_tokens)
+            complexity = broker.classify_prompt(prompt, ctx_tokens, file_count, active_folders)
             chosen, warnings = broker.pick(complexity, ctx_tokens)
             for w in warnings:
                 print(w)
             if not chosen:
                 print("[prune] No model available. Check your API keys and daily limits.")
                 continue
-            print(f"[auto -> {chosen['label']}]  complexity={complexity}  context={ctx_tokens} tokens")
+            print(f"[auto -> {chosen['label']}]  complexity={complexity}  folders={len(active_folders)}  files={file_count}")
         else:
             chosen = _resolve_alias(active_alias, config, env)
             if not chosen:
