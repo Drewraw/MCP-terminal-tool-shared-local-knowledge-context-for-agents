@@ -349,8 +349,13 @@ def _generate_llm_config(env: dict):
     # Write the config file
     lines = [
         f'// provider: {provider}  ({via})',
-        f'// PruneTool uses this to know how to call your LLM — via CLI or API key.',
-        f'// Change "provider" line if you switch providers.',
+        f'// PruneTool uses this to know how to call your LLM.',
+        f'//',
+        f'// Examples:',
+        f'//   CLI subscription  → claude -p "your question" --model claude-sonnet-4-6',
+        f'//   API key           → POST https://api.anthropic.com/v1/messages  (ANTHROPIC_API_KEY in ~/.prunetool/.env)',
+        f'//',
+        f'// To switch: update the provider comment and re-run prune chat.',
         "module.exports = {", "  models: ["
     ]
     for m in models:
