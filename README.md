@@ -6,7 +6,7 @@ PruneTool indexes your project, picks only the relevant code for each question, 
 
 ## Download
 
-**[Download PruneTool v1.0 for Windows](https://github.com/Drewraw/prunetool-mcp/releases/latest)**
+**[Download PruneTool v1.1 for Windows](https://github.com/Drewraw/prunetool-mcp/releases/latest)**
 
 Unzip and run. No Python, no Node.js, no installs.
 
@@ -16,7 +16,7 @@ Unzip and run. No Python, no Node.js, no installs.
 
 ### 1. Download and unzip
 
-Download `prunetool-v1.0-windows.zip` from the [releases page](https://github.com/Drewraw/prunetool-mcp/releases/latest) and unzip anywhere.
+Download `prunetool-v1.1-windows.zip` from the [releases page](https://github.com/Drewraw/prunetool-mcp/releases/latest) and unzip anywhere.
 
 ```
 prunetool-app/
@@ -41,9 +41,17 @@ prune.exe chat
 
 That's it. PruneTool will:
 - Open the gateway server in a new terminal window automatically
-- Scan and index your project on first run
+- Scan and index your project on first run (~15-60s, once only)
 - Show a model picker — choose your AI or press Enter for auto-routing
-- Inject relevant code context into every prompt
+
+Then inside chat, type `/describe` to load your project context:
+```
+you> /describe
+[prune] Project index found — 449 files, 10,523 symbols (scanned 2026-04-29)
+[prune] Loading project context... done (~5,200 tokens)
+```
+
+Now ask anything about your codebase.
 
 ---
 
@@ -179,16 +187,20 @@ remembers it for the whole session — not resent on every message.
 
 ```
 ~/.prunetool/
-  .env                    your API keys and settings
+  .env                    your API keys and project path
   daily_stats.json        token usage per model (resets daily)
   model_contexts.json     cached context window sizes (24h TTL)
   active_model.txt        last selected model
 
 <your-project>/
   .prunetool/
-    skeleton.json         symbol index (functions, classes, enums)
+    last_scan.json        scan timestamp, file count, symbol count
+    skeleton.json         symbol index (every function, class, enum)
     folder_map.json       folder dependency graph
-    auto_annotations.json one-line summaries per file
+    auto_annotations.json one-line AI summary per file
+    annotations.json      user-written folder notes
+    project_metadata.json file counts, directory tree
+    terminal_context.md   combined snapshot loaded by /describe
   prune library/
     library.md            session knowledge (written by /save docs)
     PROGRESS.md           current status and next steps
