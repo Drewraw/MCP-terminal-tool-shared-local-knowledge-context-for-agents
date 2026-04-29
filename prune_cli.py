@@ -470,16 +470,21 @@ def _gateway_up() -> bool:
 
 def _project_index_ready() -> bool:
     """
-    Check if the three key index files exist in the project's .prunetool/ folder.
-    These are built by a project scan — if missing, scan hasn't run yet.
+    Check if .prunetool/last_scan.json exists — written at end of every
+    successful scan. If it's there, all other index files are guaranteed to exist.
     """
     croot = Path(os.environ.get("PRUNE_CODEBASE_ROOT", Path.cwd()))
-    pt    = croot / ".prunetool"
-    return (
-        (pt / "terminal_context.md").exists()
-        and (pt / "folder_map.json").exists()
-        and (pt / "auto_annotations.json").exists()
-    )
+    return (croot / ".prunetool" / "last_scan.json").exists()
+
+
+def _last_scan_info() -> dict:
+    """Return last_scan.json contents, or empty dict if not found."""
+    croot = Path(os.environ.get("PRUNE_CODEBASE_ROOT", Path.cwd()))
+    path  = croot / ".prunetool" / "last_scan.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 def _trigger_project_scan() -> bool:
@@ -929,7 +934,12 @@ def cmd_chat(config: dict, env: dict, stats: DailyStats):
 
         # ── Step 3: load terminal_context.md into session cache ───────
         if _project_index_ready():
-            print("  [prune] Loading project context... ", end="", flush=True)
+            info = _last_scan_info()
+            scanned_at  = info.get("indexed_at", "unknown")[:10]  # date only
+            file_count  = info.get("file_count", "?")
+            sym_count   = info.get("total_symbols", "?")
+            print(f"  [prune] Project index found — {file_count} files, {sym_count:,} symbols (scanned {scanned_at})")
+            print(f"  [prune] Loading project context... ", end="", flush=True)
             project_context = _load_project_context()
             if project_context:
                 tok_est = len(project_context) // 4
