@@ -148,13 +148,30 @@ prune.exe model auto        Switch back to auto-routing
 
 Inside chat:
 ```
-/model sonnet       Switch model mid-session
+/describe           Load project context into this session
+/model <alias>      Switch model mid-session
 /model auto         Switch back to auto-routing
 /models             Show model list and usage
 /status             Show gateway status
 /clear              Clear conversation history
 /quit               Exit
 ```
+
+### How `/describe` works
+
+```
+you> /describe
+    ↓
+No index?            → runs auto scan first (first time only)
+Index < 1 hour old   → loads immediately
+Index > 1 hour old   → "Last scan was 3h ago. Rescan? (y/n)"
+
+[prune] Loading project context... done (~5,200 tokens)
+— project context is now active for this session.
+```
+
+Project context is injected into the conversation **once** and the LLM
+remembers it for the whole session — not resent on every message.
 
 ---
 
