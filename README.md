@@ -20,7 +20,7 @@ Download `prunetool-v1.1-windows.zip` from the [releases page](https://github.co
 
 ```
 prunetool-app/
-  prunetool.exe    ← gateway server
+  prunetool.exe    ← gateway server + dashboard
   prune.exe        ← AI chat CLI
   _internal/       ← bundled runtime (Python, libs, grammars)
 ```
@@ -33,22 +33,32 @@ Create `~/.prunetool/.env` (i.e. `C:\Users\yourname\.prunetool\.env`):
 PRUNE_CODEBASE_ROOT=C:\path\to\your\project
 ```
 
+Optional API keys (only needed if you don't have a Claude/Gemini CLI installed):
+
+```env
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+GROQ_API_KEY=gsk_...
+```
+
 ### 3. Start chatting
 
 ```
 prune.exe chat
 ```
 
-That's it. PruneTool will:
+PruneTool will:
 - Open the gateway server in a new terminal window automatically
-- Scan and index your project on first run (~15-60s, once only)
+- Wait for the gateway to be ready (up to 20s)
 - Show a model picker — choose your AI or press Enter for auto-routing
 
 Then inside chat, type `/describe` to load your project context:
+
 ```
 you> /describe
 [prune] Project index found — 449 files, 10,523 symbols (scanned 2026-04-29)
 [prune] Loading project context... done (~5,200 tokens)
+— project context is now active for this session.
 ```
 
 Now ask anything about your codebase.
@@ -65,7 +75,7 @@ PruneTool works with your existing subscriptions via the provider CLIs.
 | Gemini Advanced | `npm install -g @google/gemini-cli` — log in once |
 | OpenAI / Anthropic API key | Add to `~/.prunetool/.env` |
 
-PruneTool auto-detects which CLIs are installed and uses them. If you have both a CLI and an API key, the CLI is used first.
+PruneTool auto-detects which CLIs are installed and uses them first. If you have both a CLI and an API key, the CLI takes priority.
 
 ---
 
@@ -82,7 +92,8 @@ Scans every file in your project
    → builds skeleton.json       (every function, class, enum with line numbers)
    → builds folder_map.json     (which folders import from which)
    → writes auto_annotations.json  (one-sentence AI summary per file via Groq)
-   → writes terminal_context.md    (combined snapshot for AI agents)
+   → writes terminal_context.md    (combined snapshot for /describe)
+   → writes last_scan.json         (timestamp, file count, symbol count)
         ↓
 File watcher runs in background
    → detects file changes
@@ -95,8 +106,9 @@ File watcher runs in background
 ```
 you type a question
         ↓
-Scout model (Groq Llama 8B — fast, cheap)
-   1. Pre-filters: scores all symbols by keyword overlap → top 1500
+Scout model (Groq Llama 8B — fast, ~$0.001/query)
+   1. Pre-filters: scores all symbols by keyword overlap → top 1,500
+      (max 5 symbols per file — prevents large files crowding out others)
    2. Each symbol shown with: file path, line number, purpose hint, enum values
    3. Scout picks the ~5-10 most relevant files for your question
    4. Extracts only the relevant sections from those files
@@ -138,19 +150,22 @@ module.exports = {
 };
 ```
 
+- `id` — short alias used in CLI commands and stats display
+- `model` — the real API model ID sent to the provider
 - `complexity` — which query type this model handles: `simple`, `medium`, or `complex`
-- `dailyTokenGoal` — PruneTool warns you at 90% and switches models at 95%
-- `maxContext` — optional, auto-detected from provider APIs if not set
+- `dailyTokenGoal` — PruneTool warns at 90% and switches models at 95%
+- Provider is auto-detected from the model ID prefix (`claude-*` → Anthropic, `gpt-*` → OpenAI, `gemini-*` → Google, anything else → Groq)
+- Context window size is fetched live from provider APIs at startup and cached 24 hours
 
 ---
 
 ## Chat Commands
 
 ```
-prune.exe chat              Start chat (model picker appears)
+prune.exe chat              Start chat (gateway auto-opens, model picker appears)
 prune.exe models            List all models and today's usage
 prune.exe status            Show gateway status and active model
-prune.exe model sonnet      Lock to a specific model
+prune.exe model sonnet      Lock to a specific model for this session
 prune.exe model auto        Switch back to auto-routing
 ```
 
@@ -178,8 +193,7 @@ Index > 1 hour old   → "Last scan was 3h ago. Rescan? (y/n)"
 — project context is now active for this session.
 ```
 
-Project context is injected into the conversation **once** and the LLM
-remembers it for the whole session — not resent on every message.
+Project context is injected into the conversation **once** as part of your chat history — not resent on every message. The LLM remembers it for the whole session (~50 tokens per message overhead, not 5,200).
 
 ---
 
@@ -191,6 +205,7 @@ remembers it for the whole session — not resent on every message.
   daily_stats.json        token usage per model (resets daily)
   model_contexts.json     cached context window sizes (24h TTL)
   active_model.txt        last selected model
+  llms_prunetoolfinder.js your model configuration
 
 <your-project>/
   .prunetool/
@@ -212,7 +227,7 @@ Nothing is sent anywhere except your LLM provider. No telemetry.
 
 ## MCP Integration (for Claude Code, Codex CLI, etc.)
 
-PruneTool also runs an MCP server for AI agents that support the Model Context Protocol.
+PruneTool also runs an MCP server on port 8765 for AI agents that support the Model Context Protocol.
 
 HTTP transport:
 
@@ -236,7 +251,6 @@ MCP tools available to agents:
 
 - `session_start` — initialize session and model tracking
 - `describe_project` — full project context (index, annotations, prune library)
-- `get_surgical_context` — fetch relevant symbols for a query
 - `analyze_complexity` — suggest appropriate model tier
 - `report_tokens` — record usage after each response
 - `save_docs` — persist session knowledge to prune library
@@ -251,7 +265,7 @@ Open `http://localhost:8000` after starting PruneTool to see:
 - Folder dependency graph
 - Indexed files and symbol browser
 - Live scan progress
-- Pruned context inspector
+- Prompt Assist — generates optimized prompts from rough intent
 
 ---
 
@@ -268,6 +282,7 @@ Open `http://localhost:8000` after starting PruneTool to see:
 | GET | `/graph` | Folder dependency graph |
 | GET | `/annotations` | Folder annotations |
 | POST | `/annotations` | Save annotation |
+| GET | `/context-version` | Current index version hash (for delta describe) |
 | WS | `/ws` | Live index update stream |
 
 ---
@@ -277,11 +292,12 @@ Open `http://localhost:8000` after starting PruneTool to see:
 ```
 prunetool/
   server/gateway.py         FastAPI gateway — all HTTP endpoints
-  mcp_server.py             HTTP MCP server
+  mcp_server.py             HTTP MCP server (port 8765)
   mcp_stdio.py              stdio MCP entry point
   proxy_server.py           OpenAI-compatible local proxy (port 8080)
   prune_cli.py              AI chat CLI (prune.exe)
   prunetool_main.py         Binary entry point (prunetool.exe)
+  start_mcp.py              Dev startup script
   llms_prunetoolfinder.js   Shipped default model config
   indexer/
     skeletal_indexer.py     Tree-sitter + regex code parser
