@@ -351,7 +351,7 @@ class Broker:
     def available_models(self) -> list[dict]:
         return [m for m in self.models if _get_key(m["provider"], self.env)]
 
-    def classify_prompt(self, prompt: str, context_tokens: int,
+    def classify_complexity(self, prompt: str, context_tokens: int,
                         file_count: int = 0, active_folders: list = None) -> str:
         """
         Classify complexity from Scout structure (file/folder spread).
@@ -1088,7 +1088,7 @@ def cmd_chat(config: dict, env: dict, stats: DailyStats):
 
         # ── Pick model ────────────────────────────────────────────────
         if active_alias == "auto":
-            complexity = broker.classify_prompt(prompt, ctx_tokens, file_count, active_folders)
+            complexity = broker.classify_complexity(prompt, ctx_tokens, file_count, active_folders)
             chosen, warnings = broker.pick(complexity, ctx_tokens)
             for w in warnings:
                 print(w)
