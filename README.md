@@ -89,16 +89,19 @@ When you first point PruneTool at your project, it automatically:
 prunetool.exe starts
         ↓
 Scans every file in your project
-   → builds skeleton.json       (every function, class, enum with line numbers)
-   → builds folder_map.json     (which folders import from which)
-   → writes auto_annotations.json  (one-sentence AI summary per file via Groq)
+   → builds skeleton.json          (every function, class, enum with line numbers)
+   → builds folder_map.json        (which folders import from which)
    → writes terminal_context.md    (combined snapshot for /describe)
    → writes last_scan.json         (timestamp, file count, symbol count)
+   → [background] auto_annotations.json  (one-sentence AI summary per file via Groq)
         ↓
 File watcher runs in background
-   → detects file changes
+   → detects code file changes
    → rebuilds skeleton + folder_map + terminal_context automatically
-   → dashboard shows rescan badge when prune library is updated
+        ↓
+Watchdog monitors prune library/ folder
+   → detects when you save session notes
+   → dashboard shows rescan badge so you can click Project Scan
 ```
 
 ### Step 2 — Every prompt you send
