@@ -52,10 +52,10 @@ PruneTool will:
 - Wait for the gateway to be ready (up to 20s)
 - Show a model picker — choose your AI or press Enter for auto-routing
 
-Then inside chat, type `/describe` to load your project context:
+Then inside chat, type `describe_project` to load your project context:
 
 ```
-you> /describe
+you> describe_project
 [prune] Project index found — 449 files, 10,523 symbols (scanned 2026-04-29)
 [prune] Loading project context... done (~5,200 tokens)
 — project context is now active for this session.
@@ -94,8 +94,8 @@ Starts proxy   on http://localhost:8080  (OpenAI-compatible IDE endpoint)
 First run?  → opens http://localhost:8000/#/setup in browser
             → paste API key + set project folder
         ↓
-No skeleton index?  → auto-scans your project (once, ~15-60s)
-Already indexed?    → loads instantly, no re-scan
+No index yet?  → auto-scans your project once (~15-60s), then never again
+Already indexed?  → loads instantly
 ```
 
 The scan pipeline (triggered automatically on first run, or manually via dashboard):
@@ -188,7 +188,7 @@ prune.exe model auto        Switch back to auto-routing
 
 Inside chat:
 ```
-/describe           Load project context into this session
+describe_project    Load project context into this session
 /model <alias>      Switch model mid-session
 /model auto         Switch back to auto-routing
 /models             Show model list and usage
@@ -197,10 +197,10 @@ Inside chat:
 /quit               Exit
 ```
 
-### How `/describe` works
+### How `describe_project` works
 
 ```
-you> /describe
+you> describe_project
     ↓
 No index?            → runs auto scan first (first time only)
 Index < 1 hour old   → loads immediately
@@ -211,6 +211,8 @@ Index > 1 hour old   → "Last scan was 3h ago. Rescan? (y/n)"
 ```
 
 Project context is injected into the conversation **once** as part of your chat history — not resent on every message. The LLM remembers it for the whole session (~50 tokens per message overhead, not 5,200).
+
+The same `describe_project` command is also used by AI agents connecting via MCP (Claude Code, Codex CLI) — they call it automatically on connect. One command, same result, whether typed by a human or called by an AI.
 
 ---
 

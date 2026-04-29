@@ -905,7 +905,7 @@ def _cmd_describe(gw_up: bool) -> str:
     """
     if not gw_up:
         print("[prune] Gateway is not running — cannot load project context.")
-        print("        Start prunetool.exe first, then type /describe again.")
+        print("        Start prunetool.exe first, then type describe_project again.")
         return ""
 
     # ── No index at all → auto scan ───────────────────────────────────
@@ -1017,9 +1017,9 @@ def cmd_chat(config: dict, env: dict, stats: DailyStats):
     active_alias = chosen_alias
 
     if active_alias == "auto":
-        print("  Type /describe to load project context, /model <name> to switch, /quit to exit\n")
+        print("  Type describe_project to load project context, /model <name> to switch, /quit to exit\n")
     else:
-        print("  Type /describe to load project context, /model auto for auto-routing, /quit to exit\n")
+        print("  Type describe_project to load project context, /model auto for auto-routing, /quit to exit\n")
 
     history: list[dict] = []
 
@@ -1053,7 +1053,7 @@ def cmd_chat(config: dict, env: dict, stats: DailyStats):
             print("[prune] Conversation history cleared.")
             continue
 
-        if prompt == "/describe":
+        if prompt == "describe_project":
             ctx = _cmd_describe(gw_up)
             if ctx:
                 # Inject into history ONCE — LLM remembers for whole session
@@ -1130,7 +1130,7 @@ PruneTool CLI
   prune status            Show gateway + active model status
 
 Inside chat:
-  /describe               Load project context into this session
+  describe_project        Load project context into this session
   /model <alias>          Switch model mid-session
   /models                 Show model list
   /status                 Show status
