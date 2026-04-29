@@ -415,6 +415,109 @@ def _load_llm_config(env: dict | None = None) -> dict:
     return _default_config()
 
 
+def _read_config_provider() -> Optional[str]:
+    """Read the '// provider: <name>' comment from llms_prunetoolfinder.js."""
+    config_path = PRUNETOOL_DIR / "llms_prunetoolfinder.js"
+    if not config_path.exists():
+        return None
+    for line in config_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("// provider:"):
+            # extract first word after "// provider:"
+            rest = line.split("// provider:", 1)[1].strip()
+            provider = rest.split()[0].rstrip(",").lower()
+            return provider
+    return None
+
+
+def _ping_provider(provider: str, env: dict) -> tuple[bool, str]:
+    """
+    Check if the provider is reachable — CLI or API key.
+    Returns (ok, message).
+    """
+    cli_name = "claude" if provider == "anthropic" else provider
+    key_map  = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY",
+                "gemini": "GEMINI_API_KEY", "groq": "GROQ_API_KEY"}
+
+    # Try CLI first
+    if _shutil.which(cli_name):
+        try:
+            result = subprocess.run([cli_name, "--version"], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                return True, f"{cli_name} CLI reachable"
+        except Exception:
+            pass
+
+    # Try API key
+    api_key = env.get(key_map.get(provider, ""))
+    if api_key:
+        try:
+            ping_urls = {
+                "anthropic": ("https://api.anthropic.com/v1/models", {"x-api-key": api_key, "anthropic-version": "2023-06-01"}),
+                "openai":    ("https://api.openai.com/v1/models",    {"Authorization": f"Bearer {api_key}"}),
+                "groq":      ("https://api.groq.com/openai/v1/models",{"Authorization": f"Bearer {api_key}"}),
+                "gemini":    (f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}", {}),
+            }
+            url, headers = ping_urls.get(provider, (None, None))
+            if url:
+                resp = httpx.get(url, headers=headers, timeout=6.0)
+                if resp.status_code == 200:
+                    return True, f"{provider} API key valid"
+        except Exception:
+            pass
+        return False, f"{provider} API key set but could not reach {provider} API — check your connection or key"
+
+    return False, f"{provider} not reachable — no CLI found and no API key set in ~/.prunetool/.env"
+
+
+def _check_provider_or_ask(env: dict) -> bool:
+    """
+    Verify the configured provider is reachable.
+    If not set or unreachable, ask user to fix it.
+    Returns True if OK to proceed.
+    """
+    provider = _read_config_provider()
+
+    if not provider:
+        print("\n  [prune] No preferred provider set in llms_prunetoolfinder.js.")
+        print("  Auto mode needs a provider to route queries.")
+        available = _detect_available_providers(env)
+        if not available:
+            print("  No providers detected. Add an API key to ~/.prunetool/.env")
+            print("  e.g. ANTHROPIC_API_KEY=sk-ant-...")
+            return False
+        print(f"  Detected: {', '.join(available)}")
+        choice = input("  Pick provider to use (or press Enter to skip): ").strip().lower()
+        if not choice:
+            return False
+        for p in available:
+            if choice in p or p in choice:
+                provider = p
+                break
+        if not provider:
+            provider = available[0]
+        # Update the config file with chosen provider
+        config_path = PRUNETOOL_DIR / "llms_prunetoolfinder.js"
+        if config_path.exists():
+            text = config_path.read_text(encoding="utf-8")
+            if "// provider:" not in text:
+                text = f"// provider: {provider}   ← your preferred provider (anthropic | openai | gemini | groq)\n" + text
+                config_path.write_text(text, encoding="utf-8")
+        print(f"  Provider set to: {provider}")
+
+    print(f"\n  [prune] Checking provider: {provider}...", end=" ", flush=True)
+    ok, msg = _ping_provider(provider, env)
+    if ok:
+        print(f"OK ({msg})")
+        return True
+    else:
+        print(f"FAILED")
+        print(f"  [prune] {msg}")
+        print(f"  Fix: install the {provider} CLI or add the API key to ~/.prunetool/.env")
+        choice = input("  Continue anyway? (y/n): ").strip().lower()
+        return choice == "y"
+
+
 def _default_config() -> dict:
     return {
         "router_model": "llama-3.1-8b-instant",
@@ -1160,6 +1263,9 @@ def cmd_chat(config: dict, env: dict, stats: DailyStats):
                 _wait_for_scan()
             else:
                 print("  [prune] Could not trigger scan — open http://localhost:8000 and click Scan Project.\n")
+
+    # ── Step 3: verify provider is reachable ─────────────────────────
+    _check_provider_or_ask(env)
 
     # Copilot-style model picker on every session start
     chosen_alias = _model_picker(config, env, stats)
