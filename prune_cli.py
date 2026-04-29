@@ -303,7 +303,7 @@ def _detect_available_providers(env: dict) -> list[str]:
 
 def _generate_llm_config(env: dict):
     """
-    First-time setup: detect available providers, ask user to pick one,
+    First-time setup: detect available providers, ask user to pick one or many,
     auto-generate ~/.prunetool/llms_prunetoolfinder.js with correct models.
     """
     available = _detect_available_providers(env)
@@ -316,59 +316,71 @@ def _generate_llm_config(env: dict):
         print("  e.g. ANTHROPIC_API_KEY=sk-ant-...")
         return
 
+    key_map = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY",
+               "gemini": "GEMINI_API_KEY", "groq": "GROQ_API_KEY"}
+
     print("  Detected providers:")
     for i, p in enumerate(available, 1):
         via = "CLI" if _shutil.which("claude" if p == "anthropic" else p) else "API key"
         print(f"    {i}. {p}  (via {via})")
 
     print()
-    choice = input("  Pick your preferred provider (number or name): ").strip().lower()
+    print("  You can pick one or multiple providers (e.g. '1' or '1,3' or 'anthropic,openai')")
+    choice = input("  Pick providers: ").strip().lower()
 
-    provider = None
-    if choice.isdigit():
-        idx = int(choice) - 1
-        if 0 <= idx < len(available):
-            provider = available[idx]
-    else:
-        for p in available:
-            if choice in p or p in choice:
-                provider = p
-                break
+    # Parse single or multiple selections
+    selected_providers = []
+    parts = [c.strip() for c in choice.replace(" ", ",").split(",") if c.strip()]
+    for part in parts:
+        if part.isdigit():
+            idx = int(part) - 1
+            if 0 <= idx < len(available):
+                selected_providers.append(available[idx])
+        else:
+            for p in available:
+                if part in p or p in part:
+                    if p not in selected_providers:
+                        selected_providers.append(p)
 
-    if not provider:
-        provider = available[0]
-        print(f"  Defaulting to: {provider}")
+    if not selected_providers:
+        selected_providers = [available[0]]
+        print(f"  Defaulting to: {selected_providers[0]}")
 
-    models = _PROVIDER_MODELS.get(provider, [])
-    if not models:
-        print(f"  No model list for {provider}. Edit ~/.prunetool/llms_prunetoolfinder.js manually.")
+    # Collect models from all selected providers
+    # Assign complexity tiers: first provider gets simple, last gets complex, middle gets medium
+    all_models = []
+    complexity_tiers = ["simple", "medium", "complex"]
+    for provider in selected_providers:
+        provider_models = _PROVIDER_MODELS.get(provider, [])
+        all_models.extend(provider_models)
+
+    if not all_models:
+        print("  No models found. Edit ~/.prunetool/llms_prunetoolfinder.js manually.")
         return
 
-    cli_name = "claude" if provider == "anthropic" else provider
-    has_cli = bool(_shutil.which(cli_name))
-    key_map = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY",
-               "gemini": "GEMINI_API_KEY", "groq": "GROQ_API_KEY"}
-    has_api = bool(env.get(key_map.get(provider, "")))
-
+    # Build access method comments for each provider
     access_lines = []
-    if has_cli:
-        access_lines.append(f'//   CLI subscription  → {cli_name} -p "your question" --model <model-id>  ✓ detected')
-    else:
-        access_lines.append(f'//   CLI subscription  → not detected (install {cli_name} CLI to use)')
-    if has_api:
-        access_lines.append(f'//   API key           → {key_map.get(provider, "API_KEY")} set in ~/.prunetool/.env  ✓ detected')
-    else:
-        access_lines.append(f'//   API key           → not set (add {key_map.get(provider, "API_KEY")} to ~/.prunetool/.env)')
+    for provider in selected_providers:
+        cli_name = "claude" if provider == "anthropic" else provider
+        has_cli  = bool(_shutil.which(cli_name))
+        has_api  = bool(env.get(key_map.get(provider, "")))
+        cli_status = f"✓ detected" if has_cli else "not detected"
+        api_status = f"✓ detected" if has_api else f"not set (add {key_map.get(provider, 'API_KEY')} to ~/.prunetool/.env)"
+        access_lines.append(f'//   {provider}:')
+        access_lines.append(f'//     CLI → {cli_name} CLI {cli_status}')
+        access_lines.append(f'//     API → {key_map.get(provider, "API_KEY")} {api_status}')
+
+    provider_str = ", ".join(selected_providers)
 
     # Write the config file
     lines = [
-        f'// provider: {provider}   ← your preferred provider for this project (anthropic | openai | gemini | groq)',
+        f'// provider: {provider_str}   ← your preferred providers (anthropic | openai | gemini | groq)',
         f'//',
         f'// Access methods:',
         *access_lines,
         f'//',
         f'// PruneTool uses CLI first, API key as fallback.',
-        f'// To switch provider: update the provider line above and re-run prune chat.',
+        f'// To switch providers: update the provider line above and re-run prune chat.',
         "module.exports = {", "  models: ["
     ]
     for m in models:
