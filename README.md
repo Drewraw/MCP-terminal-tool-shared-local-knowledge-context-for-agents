@@ -157,38 +157,50 @@ Answer streamed back to your terminal
 
 On first run, PruneTool auto-generates `~/.prunetool/llms_prunetoolfinder.js` for you:
 
-- Detects which CLIs are installed (`claude`, `gemini`)
-- Detects which API keys are set in `~/.prunetool/.env`
-- Asks you which provider you prefer
-- Fills in the correct model IDs, complexity tiers, and 50K daily token limit
+- Detects which CLIs are installed (`claude`, `gemini`) and which API keys are in `~/.prunetool/.env`
+- Shows detected providers and asks which ones you want to use
+- You can pick **one or multiple** providers (e.g. `1` or `1,2` or `anthropic,groq`)
+- Fills in curated model IDs, complexity tiers, and 50K daily token limit per model
 
-The generated file looks like:
+Example — picking both Anthropic and Groq:
+
+```
+Detected providers:
+  1. anthropic  (via CLI)
+  2. groq       (via API key)
+
+Pick providers (e.g. '1' or '1,2' or 'anthropic,groq'): 1,2
+```
+
+Generated `llms_prunetoolfinder.js`:
 
 ```js
-// provider: anthropic   ← your preferred provider (anthropic | openai | gemini | groq)
+// provider: anthropic, groq
 //
 // Access methods:
-//   CLI subscription  → claude -p "your question" --model <model-id>  ✓ detected
-//   API key           → not set (add ANTHROPIC_API_KEY to ~/.prunetool/.env)
+//   anthropic:
+//     CLI → claude CLI ✓ detected
+//     API → ANTHROPIC_API_KEY not set
+//   groq:
+//     CLI → groq CLI not detected
+//     API → GROQ_API_KEY ✓ detected
 //
 // PruneTool uses CLI first, API key as fallback.
 module.exports = {
   models: [
-    { id: "claude-haiku",  label: "Claude Haiku",  model: "claude-haiku-4-5-20251001", complexity: "simple",  dailyTokenGoal: 50000 },
-    { id: "claude-sonnet", label: "Claude Sonnet", model: "claude-sonnet-4-6",         complexity: "medium",  dailyTokenGoal: 50000 },
-    { id: "claude-opus",   label: "Claude Opus",   model: "claude-opus-4-6",           complexity: "complex", dailyTokenGoal: 50000 },
+    { id: "claude-haiku-4-5-20251001", label: "Claude Haiku",      model: "claude-haiku-4-5-20251001", complexity: "simple",  dailyTokenGoal: 50000 },
+    { id: "claude-sonnet-4-6",         label: "Claude Sonnet",      model: "claude-sonnet-4-6",         complexity: "medium",  dailyTokenGoal: 50000 },
+    { id: "claude-opus-4-6",           label: "Claude Opus",        model: "claude-opus-4-6",           complexity: "complex", dailyTokenGoal: 50000 },
+    { id: "llama-3-1-8b-instant",      label: "Llama 3.1 8B",      model: "llama-3.1-8b-instant",      complexity: "simple",  dailyTokenGoal: 50000 },
+    { id: "llama-3-3-70b-versatile",   label: "Llama 3.3 70B",     model: "llama-3.3-70b-versatile",   complexity: "medium",  dailyTokenGoal: 50000 },
   ]
 };
 ```
 
-- `id` — short alias used in CLI commands and stats display
-- `model` — the real API model ID sent to the provider
-- `complexity` — which query type this model handles: `simple`, `medium`, or `complex`
-- `dailyTokenGoal` — PruneTool warns at 90% and switches models at 95% (default: 50,000)
-- Provider auto-detected from model ID prefix (`claude-*` → Anthropic, `gpt-*` → OpenAI, `gemini-*` → Google, else → Groq)
-- Context window size fetched live from provider APIs at startup, cached 24 hours
-
-On every startup, PruneTool pings your configured provider to verify it's reachable before showing the model picker.
+- `complexity` — auto-guessed from model name (8B→simple, 70B→medium, opus/large→complex)
+- `dailyTokenGoal` — PruneTool warns at 90%, switches model at 95% (default: 50,000)
+- Context window fetched live from provider APIs at startup, cached 24 hours
+- On every startup, PruneTool pings your configured provider before showing the model picker
 
 ---
 
