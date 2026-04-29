@@ -83,12 +83,26 @@ PruneTool auto-detects which CLIs are installed and uses them first. If you have
 
 ### Step 1 — Project scan (runs once, then stays updated)
 
-When you first point PruneTool at your project, it automatically:
+`prunetool.exe` is the gateway + proxy server. When it starts:
 
 ```
 prunetool.exe starts
         ↓
-Scans every file in your project
+Starts gateway on http://localhost:8000  (scanner + /prune API)
+Starts proxy   on http://localhost:8080  (OpenAI-compatible IDE endpoint)
+        ↓
+First run?  → opens http://localhost:8000/#/setup in browser
+            → paste API key + set project folder
+        ↓
+No skeleton index?  → auto-scans your project (once, ~15-60s)
+Already indexed?    → loads instantly, no re-scan
+```
+
+The scan pipeline (triggered automatically on first run, or manually via dashboard):
+
+```
+POST /re-scan
+        ↓
    → builds skeleton.json          (every function, class, enum with line numbers)
    → builds folder_map.json        (which folders import from which)
    → writes terminal_context.md    (combined snapshot for /describe)
