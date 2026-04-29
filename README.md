@@ -6,7 +6,7 @@ PruneTool indexes your project, picks only the relevant code for each question, 
 
 ## Download
 
-**[Download PruneTool v1.1 for Windows](https://github.com/Drewraw/prunetool-mcp/releases/latest)**
+**[Download PruneTool v1.2 for Windows](https://github.com/Drewraw/prunetool-mcp/releases/latest)**
 
 Unzip and run. No Python, no Node.js, no installs.
 
@@ -16,7 +16,7 @@ Unzip and run. No Python, no Node.js, no installs.
 
 ### 1. Download and unzip
 
-Download `prunetool-v1.1-windows.zip` from the [releases page](https://github.com/Drewraw/prunetool-mcp/releases/latest) and unzip anywhere.
+Download `prunetool-v1.2-windows.zip` from the [releases page](https://github.com/Drewraw/prunetool-mcp/releases/latest) and unzip anywhere.
 
 ```
 prunetool-app/
@@ -131,10 +131,10 @@ Scout model (Groq Llama 8B — fast, ~$0.001/query)
    4. Extracts only the relevant sections from those files
    5. Assembles compact context: ~3-8K tokens instead of 100K+
         ↓
-Complexity classifier (also Groq Llama — same fast call)
-   - simple  → fast cheap model (Haiku, Gemini Flash, Llama)
-   - medium  → balanced model (Sonnet, GPT-4o)
-   - complex → powerful model (Opus, o1)
+Complexity classifier (folder spread — no extra API call)
+   - 1 folder selected        → simple  → fast cheap model (Haiku, Gemini Flash)
+   - 2-3 folders selected     → medium  → balanced model (Sonnet, GPT-4o)
+   - 4+ folders selected      → heavy   → powerful model (Opus, o1)
    - checks daily token budget → warns at 90%, switches model at 95%
         ↓
 Your chosen LLM gets: pruned context + your question
@@ -155,14 +155,28 @@ Answer streamed back to your terminal
 
 ## Model Configuration
 
-Edit `~/.prunetool/llms_prunetoolfinder.js` to list the models you have access to:
+On first run, PruneTool auto-generates `~/.prunetool/llms_prunetoolfinder.js` for you:
+
+- Detects which CLIs are installed (`claude`, `gemini`)
+- Detects which API keys are set in `~/.prunetool/.env`
+- Asks you which provider you prefer
+- Fills in the correct model IDs, complexity tiers, and 50K daily token limit
+
+The generated file looks like:
 
 ```js
+// provider: anthropic   ← your preferred provider (anthropic | openai | gemini | groq)
+//
+// Access methods:
+//   CLI subscription  → claude -p "your question" --model <model-id>  ✓ detected
+//   API key           → not set (add ANTHROPIC_API_KEY to ~/.prunetool/.env)
+//
+// PruneTool uses CLI first, API key as fallback.
 module.exports = {
   models: [
-    { id: "claude-haiku",  label: "Claude Haiku",  model: "claude-haiku-4-5-20251001", complexity: "simple",  dailyTokenGoal: 20000 },
-    { id: "claude-sonnet", label: "Claude Sonnet", model: "claude-sonnet-4-6",         complexity: "medium",  dailyTokenGoal: 10000 },
-    { id: "claude-opus",   label: "Claude Opus",   model: "claude-opus-4-6",           complexity: "complex", dailyTokenGoal: 5000  },
+    { id: "claude-haiku",  label: "Claude Haiku",  model: "claude-haiku-4-5-20251001", complexity: "simple",  dailyTokenGoal: 50000 },
+    { id: "claude-sonnet", label: "Claude Sonnet", model: "claude-sonnet-4-6",         complexity: "medium",  dailyTokenGoal: 50000 },
+    { id: "claude-opus",   label: "Claude Opus",   model: "claude-opus-4-6",           complexity: "complex", dailyTokenGoal: 50000 },
   ]
 };
 ```
@@ -170,9 +184,11 @@ module.exports = {
 - `id` — short alias used in CLI commands and stats display
 - `model` — the real API model ID sent to the provider
 - `complexity` — which query type this model handles: `simple`, `medium`, or `complex`
-- `dailyTokenGoal` — PruneTool warns at 90% and switches models at 95%
-- Provider is auto-detected from the model ID prefix (`claude-*` → Anthropic, `gpt-*` → OpenAI, `gemini-*` → Google, anything else → Groq)
-- Context window size is fetched live from provider APIs at startup and cached 24 hours
+- `dailyTokenGoal` — PruneTool warns at 90% and switches models at 95% (default: 50,000)
+- Provider auto-detected from model ID prefix (`claude-*` → Anthropic, `gpt-*` → OpenAI, `gemini-*` → Google, else → Groq)
+- Context window size fetched live from provider APIs at startup, cached 24 hours
+
+On every startup, PruneTool pings your configured provider to verify it's reachable before showing the model picker.
 
 ---
 
@@ -234,7 +250,7 @@ The same `describe_project` command is also used by AI agents connecting via MCP
     auto_annotations.json one-line AI summary per file
     annotations.json      user-written folder notes
     project_metadata.json file counts, directory tree
-    terminal_context.md   combined snapshot loaded by /describe
+    terminal_context.md   combined snapshot loaded by describe_project
   prune library/
     library.md            session knowledge (written by /save docs)
     PROGRESS.md           current status and next steps
