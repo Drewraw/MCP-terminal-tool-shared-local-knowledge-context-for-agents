@@ -7,6 +7,7 @@ import MindmapView from './components/MindmapView.jsx'
 import KnowledgeGraph from './components/KnowledgeGraph.jsx'
 import FolderSelector from './components/FolderSelector.jsx'
 import ModelUsage from './components/ModelUsage.jsx'
+import PromptAssist from './components/PromptAssist.jsx'
 
 const API_BASE = ''
 
@@ -462,6 +463,12 @@ export default function App() {
             >
               LLM Usage
             </button>
+            <button
+              className={`tab ${activeTab === 'prompt-assist' ? 'active' : ''}`}
+              onClick={() => setActiveTab('prompt-assist')}
+            >
+              Prompt Assist
+            </button>
           </div>
 
 <div style={{ display: activeTab === 'graph' ? 'flex' : 'none', flexDirection: 'column', flex: 1, overflow: 'hidden', minHeight: 0 }}>
@@ -490,6 +497,10 @@ export default function App() {
 
           {activeTab === 'llm-usage' && (
             <ModelUsage theme={theme} />
+          )}
+
+          {activeTab === 'prompt-assist' && (
+            <PromptAssist theme={theme} />
           )}
         </div>
       </div>

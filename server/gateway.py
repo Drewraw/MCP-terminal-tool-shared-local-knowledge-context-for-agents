@@ -21,6 +21,7 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import secrets
@@ -33,7 +34,7 @@ from typing import List, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -97,6 +98,14 @@ burned_stats: dict = {
     "status":        "Offline",
 }
 
+# Shared cache for Prompt Assist, synced from terminal_context.md.
+_prompt_assist_shared_context: dict = {
+    "text": "",
+    "updated_at": None,
+    "source": "",
+    "last_reason": "",
+}
+
 # Live scan progress — polled by MCP server terminal
 _scan_status: dict = {
     "stage":        "idle",   # idle | loading_library | scanning | building_map | annotating | complete
@@ -107,6 +116,19 @@ _scan_status: dict = {
     "total_to_annotate": 0,
     "started_at":   None,
     "finished_at":  None,
+}
+
+# Context version — bumped every time terminal_context.md changes
+# Sections stored separately so describe_project can return deltas
+_context_version: dict = {
+    "version":          "",          # short hash e.g. "a3f9b2"
+    "updated_at":       0.0,
+    "sections": {                    # last-known hash per section
+        "folder_map":       "",
+        "auto_annotations": "",
+        "prune_library":    "",
+        "readme":           "",
+    },
 }
 
 # -------------------------------------------------------------------
@@ -182,6 +204,7 @@ async def lifespan(app: FastAPI):
     # except Exception as e:
     #     print(f"[gateway] KB context build failed: {e}")
 
+    _refresh_prompt_assist_shared_context(reason="startup")
     print("[gateway] Ready. Serving on http://localhost:8420")
     yield
 
@@ -240,20 +263,142 @@ async def _poll_bifrost():
             burned_stats["status"] = "Bifrost Offline"
 
 
-def _on_skeleton_update(updated_skeleton: SkeletalIndex):
-    """Called by the file watcher when the skeleton changes."""
+def _on_skeleton_update(updated_skeleton: SkeletalIndex, changed_files: list[str] = None):
+    """Called by file watcher when source files change. Runs full cache pipeline."""
     global skeleton, pruner
     skeleton = updated_skeleton
-    annos = annotations_manager.get_all_annotations() if annotations_manager else {}
-    fm = storage.folder_map if storage else None
+    changed_files = changed_files or []
+
+    # Run the full async pipeline as a background task
+    asyncio.create_task(_auto_update_pipeline(changed_files))
+
+
+async def _auto_update_pipeline(changed_files: list[str]):
+    """
+    Full auto-update pipeline triggered by file watcher.
+    Runs: folder_map → pruner rebuild → annotate changed files →
+          terminal_context.md → version stamp → SSE push → user message.
+    """
+    global skeleton, pruner, _context_version
+
+    t_start = time.time()
+    groq_tokens_used = 0
+
+    # ── Step 1: Rebuild folder map (incremental, ~1s) ──────────────
+    try:
+        if storage:
+            storage.build_folder_map(CODEBASE_ROOT)
+    except Exception as e:
+        print(f"[auto-update] folder_map rebuild failed: {e}", flush=True)
+
+    # ── Step 2: Rebuild PruningEngine with fresh data ──────────────
+    annos = storage.get_all_annotations() if storage else {}
+    fm    = storage.folder_map if storage else None
     pruner = PruningEngine(skeleton, CODEBASE_ROOT, annotations=annos, scout=scout, folder_map=fm)
 
-    # Notify connected WebSocket clients
-    asyncio.create_task(_broadcast({
-        "type": "skeleton_updated",
-        "total_symbols": skeleton.total_symbols,
-        "file_count": skeleton.file_count,
-    }))
+    # ── Step 3: Auto-annotate only the changed files ───────────────
+    if pruner and pruner.auto_annotator and changed_files:
+        added_or_modified = [f for f in changed_files
+                             if not f.endswith(('.md', '.txt', '.json', '.yaml', '.yml', '.toml'))]
+        if added_or_modified:
+            try:
+                groq_tokens_used = await _annotate_specific_files(pruner, added_or_modified)
+            except Exception as e:
+                print(f"[auto-update] annotation failed: {e}", flush=True)
+
+    # ── Step 4: Rebuild terminal_context.md + compute version ──────
+    old_sections = dict(_context_version["sections"])
+    try:
+        _build_kb_context()
+        _refresh_prompt_assist_shared_context(reason="auto-update")
+    except Exception as e:
+        print(f"[auto-update] terminal_context rebuild failed: {e}", flush=True)
+
+    # Compute per-section hashes from storage data
+    def _h(text: str) -> str:
+        return hashlib.md5(text.encode()).hexdigest()[:8]
+
+    new_sections = {
+        "folder_map":       _h(json.dumps(storage.folder_map, default=str) if storage else ""),
+        "auto_annotations": _h(json.dumps(
+            (storage.auto_annotations if hasattr(storage, "auto_annotations") else {}),
+            default=str) if storage else ""),
+        "prune_library":    _h(json.dumps(storage.user_annotations, default=str) if storage else ""),
+        "readme":           _h((Path(CODEBASE_ROOT) / "README.md").read_text(encoding="utf-8", errors="ignore")
+                               if (Path(CODEBASE_ROOT) / "README.md").exists() else ""),
+    }
+
+    changed_sections = [k for k, v in new_sections.items() if old_sections.get(k) != v]
+
+    # New overall version hash
+    combined = "".join(new_sections.values())
+    new_version = hashlib.md5(combined.encode()).hexdigest()[:8]
+    _context_version["version"]    = new_version
+    _context_version["updated_at"] = time.time()
+    _context_version["sections"]   = new_sections
+
+    elapsed = time.time() - t_start
+
+    # ── Step 5: Broadcast to dashboard WebSocket ───────────────────
+    await _broadcast({
+        "type":             "skeleton_updated",
+        "total_symbols":    skeleton.total_symbols,
+        "file_count":       skeleton.file_count,
+    })
+
+    # ── Step 6: Push context_updated SSE event to MCP clients ──────
+    await _broadcast({
+        "type":            "context_updated",
+        "new_version":     new_version,
+        "changed_sections": changed_sections,
+        "changed_files":   changed_files,
+        "groq_tokens_used": groq_tokens_used,
+        "elapsed_s":       round(elapsed, 2),
+    })
+
+    # ── Step 7: User-visible terminal message ─────────────────────
+    files_str  = ", ".join(changed_files[:3]) + ("..." if len(changed_files) > 3 else "")
+    annot_note = f" | Groq annotation: ~{groq_tokens_used} tokens" if groq_tokens_used else ""
+    changed_note = f" | changed: {', '.join(changed_sections)}" if changed_sections else " | no section changes"
+
+    print(f"\n┌─ Project cache auto-saved ({'v' + new_version}) ────────────────────────", flush=True)
+    print(f"│  Files  : {files_str}", flush=True)
+    print(f"│  Time   : {elapsed:.2f}s{annot_note}", flush=True)
+    print(f"│  Sections{changed_note}", flush=True)
+    print(f"│  LLMs with stale context will receive a tap to refresh (~300 tokens)", flush=True)
+    print(f"└────────────────────────────────────────────────────────────────────────\n", flush=True)
+
+
+async def _annotate_specific_files(engine, file_paths: list[str]) -> int:
+    """
+    Annotate only the given files. Returns estimated Groq tokens used.
+    Reuses the same batch logic as full annotation but for a small set.
+    """
+    if not engine or not engine.auto_annotator:
+        return 0
+
+    annotator = engine.auto_annotator
+    tokens_used = 0
+    BATCH = 8
+
+    # Filter to files that are actually in the skeleton
+    skeleton_files = {e.file_path for e in engine.skeleton.entries}
+    to_annotate = [f for f in file_paths if f in skeleton_files]
+
+    for i in range(0, len(to_annotate), BATCH):
+        batch = to_annotate[i:i + BATCH]
+        try:
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, annotator.annotate_batch, batch
+            )
+            if isinstance(result, dict):
+                tokens_used += result.get("tokens_used", len(batch) * 530)
+            else:
+                tokens_used += len(batch) * 530
+        except Exception:
+            tokens_used += len(batch) * 530
+
+    return tokens_used
 
 
 async def _broadcast(message: dict):
@@ -362,6 +507,12 @@ class LicenseActivateBody(BaseModel):
 class ScoutSelectBody(BaseModel):
     user_query: str = Field(..., description="Developer query")
     goal_hint: str = Field(default="", description="Optional focus hint")
+
+
+class PromptAssistBody(BaseModel):
+    user_input: str = Field(..., description="User's rough request")
+    model: str = Field(default="PruneTool Balanced", description="Prompt-assist model label")
+    mode: str = Field(default="prompt-assist", description="Prompt mode or style")
 
 
 # -------------------------------------------------------------------
@@ -1121,6 +1272,7 @@ async def rescan_endpoint():
     # ── Step 5: Rebuild terminal_context.md ─────────────────────────
     try:
         _build_kb_context()
+        _refresh_prompt_assist_shared_context(reason="re-scan")
         print("[re-scan] terminal_context.md updated")
     except Exception as e:
         print(f"[re-scan] terminal_context.md update failed: {e}")
@@ -1234,6 +1386,123 @@ async def _annotate_all_files_background(engine, reparsed_files: set = None) -> 
 async def scan_status_endpoint():
     """Live scan progress — polled by MCP server terminal during re-scan."""
     return _scan_status
+
+
+class ApiKeySetup(BaseModel):
+    anthropic_api_key: str = ""
+    openai_api_key:    str = ""
+    groq_api_key:      str = ""
+    codebase_root:     str = ""
+
+
+@app.post("/api/setup")
+async def setup_endpoint(body: ApiKeySetup):
+    """
+    Save API keys and project root to ~/.prunetool/.env
+    Called from the dashboard setup screen on first run.
+    Keys never touch the binary — stored only in the user's home dir.
+    """
+    env_dir  = Path.home() / ".prunetool"
+    env_file = env_dir / ".env"
+    env_dir.mkdir(parents=True, exist_ok=True)
+
+    lines = []
+    if body.anthropic_api_key.strip():
+        lines.append(f"ANTHROPIC_API_KEY={body.anthropic_api_key.strip()}")
+    if body.openai_api_key.strip():
+        lines.append(f"OPENAI_API_KEY={body.openai_api_key.strip()}")
+    if body.groq_api_key.strip():
+        lines.append(f"GROQ_API_KEY={body.groq_api_key.strip()}")
+    if body.codebase_root.strip():
+        lines.append(f"PRUNE_CODEBASE_ROOT={body.codebase_root.strip()}")
+
+    if not lines:
+        return JSONResponse({"error": "No values provided"}, status_code=400)
+
+    # Merge with existing .env — update keys that are provided, keep the rest
+    existing: dict[str, str] = {}
+    if env_file.exists():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if "=" in line and not line.startswith("#"):
+                k, _, v = line.partition("=")
+                existing[k.strip()] = v.strip()
+
+    for line in lines:
+        k, _, v = line.partition("=")
+        existing[k.strip()] = v.strip()
+
+    env_file.write_text(
+        "\n".join(f"{k}={v}" for k, v in existing.items()) + "\n",
+        encoding="utf-8",
+    )
+
+    print(f"[setup] API keys saved to {env_file}", flush=True)
+    return {
+        "status":   "saved",
+        "env_file": str(env_file),
+        "keys_set": list(existing.keys()),
+        "best_practices": [
+            {
+                "title": "Disable built-in codebase context in your IDE",
+                "detail": (
+                    "Cursor, Continue.dev, and similar tools have a built-in "
+                    "'Add codebase context' or '@codebase' toggle. "
+                    "Turn it OFF when using PruneTool. "
+                    "If both are active, the model receives duplicate context — "
+                    "your full files from the IDE plus PruneTool's pruned version — "
+                    "which wastes tokens and can produce conflicting answers."
+                ),
+                "affected_tools": ["Cursor", "Continue.dev", "GitHub Copilot Chat", "Cody"],
+            },
+            {
+                "title": "Point only one AI endpoint at a time to the proxy",
+                "detail": (
+                    "Set your IDE's API base URL to http://localhost:8080/v1. "
+                    "Remove or disable any other custom endpoint you had before. "
+                    "Running two proxies in parallel will split requests unpredictably."
+                ),
+            },
+            {
+                "title": "Run a Project Scan after setup",
+                "detail": (
+                    "Open http://localhost:8000 and click 'Scan Project' once. "
+                    "This builds the symbol index and folder map that the proxy "
+                    "uses to prune context. Without a scan, the proxy passes "
+                    "requests through without any context injection."
+                ),
+            },
+        ],
+    }
+
+
+@app.get("/api/setup/status")
+async def setup_status_endpoint():
+    """Check which keys are configured — returns key names only, never values."""
+    env_file = Path.home() / ".prunetool" / ".env"
+    if not env_file.exists():
+        return {"configured": False, "keys": []}
+    keys = []
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if "=" in line and not line.startswith("#"):
+            k = line.split("=", 1)[0].strip()
+            if k:
+                keys.append(k)
+    return {"configured": bool(keys), "keys": keys}
+
+
+@app.get("/context-version")
+async def context_version_endpoint():
+    """
+    Returns current context version and per-section hashes.
+    MCP describe_project calls this to check if LLM context is stale.
+    """
+    return {
+        "version":    _context_version["version"],
+        "updated_at": _context_version["updated_at"],
+        "sections":   _context_version["sections"],
+    }
 
 
 class RescanNeededBody(BaseModel):
@@ -1575,6 +1844,8 @@ async def mcp_log_endpoint(request: Request):
         tool  = body.get("tool", "")
         prefix = f"[stdio/{tool}]" if tool else "[stdio]"
         print(f"{prefix} {level}  {msg}", flush=True)
+        if tool == "describe_project":
+            _refresh_prompt_assist_shared_context(reason="describe_project")
     except Exception:
         pass
     return {"ok": True}
@@ -1739,6 +2010,256 @@ async def model_usage_endpoint(period: str = "today"):
         })
 
     return {"models": models, "total_tokens": sum(model_tokens.values()), "period": period}
+
+
+def _read_terminal_context_snapshot(max_chars: int = 12000) -> str:
+    """Read shared terminal_context.md produced by PruneTool scan."""
+    ctx_path = Path(CODEBASE_ROOT) / ".prunetool" / "terminal_context.md"
+    if not ctx_path.exists():
+        return ""
+    try:
+        raw = ctx_path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    compact = " ".join(raw.split())
+    return compact[:max_chars]
+
+
+def _refresh_prompt_assist_shared_context(reason: str = "") -> None:
+    """Refresh in-memory prompt-assist cache from terminal_context.md."""
+    text = _read_terminal_context_snapshot()
+    if not text:
+        return
+    _prompt_assist_shared_context["text"] = text
+    _prompt_assist_shared_context["updated_at"] = time.time()
+    _prompt_assist_shared_context["source"] = str(Path(CODEBASE_ROOT) / ".prunetool" / "terminal_context.md")
+    _prompt_assist_shared_context["last_reason"] = reason or "refresh"
+
+
+def _infer_prompt_intent(user_input: str) -> tuple[str, str, str]:
+    """Infer task type and prompt posture from rough user input."""
+    text = (user_input or "").strip().lower()
+    if any(word in text for word in ["bug", "fix", "error", "fail", "issue", "broken", "crash"]):
+        return (
+            "bug investigation / possible code fix",
+            "Identify root cause first, then apply the smallest safe fix.",
+            "minimal-fix",
+        )
+    if any(word in text for word in ["add", "implement", "create", "build", "support"]):
+        return (
+            "feature implementation",
+            "Find the entry point first and follow existing project patterns.",
+            "implementation",
+        )
+    if any(word in text for word in ["explain", "understand", "walk through", "how does", "why does"]):
+        return (
+            "code explanation",
+            "Explain behavior first, then cite concrete files and modules.",
+            "explain-first",
+        )
+    if any(word in text for word in ["refactor", "cleanup", "simplify", "restructure", "rename"]):
+        return (
+            "refactor",
+            "Preserve behavior unless a change is explicitly required.",
+            "safe-refactor",
+        )
+    if any(word in text for word in ["test", "coverage", "spec"]):
+        return (
+            "test work",
+            "Focus on a narrow test scope that proves behavior.",
+            "test-first",
+        )
+    return (
+        "general engineering task",
+        "Clarify assumptions, keep scope narrow, and cite concrete files.",
+        "balanced",
+    )
+
+
+def _read_recent_library_notes(limit: int = 2) -> list[str]:
+    """Return short snippets from recently updated prune library notes."""
+    lib_dir = Path(CODEBASE_ROOT) / "prune library"
+    if not lib_dir.exists():
+        return []
+
+    notes: list[str] = []
+    ordered = sorted(lib_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
+    for md in ordered:
+        try:
+            raw = md.read_text(encoding="utf-8").strip()
+        except Exception:
+            continue
+        if not raw:
+            continue
+        compact = " ".join(raw.split())
+        notes.append(f"{md.stem}: {compact[:220]}")
+    return notes
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate used only for reporting."""
+    if not text:
+        return 0
+    return max(1, (len(text) + 3) // 4)
+
+
+def _top_project_areas(limit: int = 4) -> list[str]:
+    """Return the top indexed folders from cached project metadata."""
+    if storage and storage.project_metadata and storage.project_metadata.directory_tree:
+        ordered = sorted(
+            storage.project_metadata.directory_tree.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        return [name for name, _ in ordered[:limit]]
+
+    if storage and storage.folder_map:
+        return list((storage.folder_map.get("folders") or {}).keys())[:limit]
+
+    return []
+
+
+def _build_prompt_assist_payload(user_input: str, model: str, mode: str) -> dict:
+    """Build prompt suggestion using cached index, annotations, and library notes."""
+    if not skeleton:
+        raise HTTPException(status_code=503, detail="Project context is not ready. Run Scan Project first.")
+
+    if not _prompt_assist_shared_context.get("text"):
+        _refresh_prompt_assist_shared_context(reason="prompt_assist_request")
+
+    intent, guidance, style = _infer_prompt_intent(user_input)
+    hits = skeleton.search(user_input, top_k=10) if user_input.strip() else []
+
+    seen_files: set[str] = set()
+    relevant_context: list[str] = []
+    relevant_files: list[str] = []
+    for entry in hits:
+        rel_path = entry.file_path.replace("\\", "/")
+        if rel_path in seen_files:
+            continue
+        seen_files.add(rel_path)
+        label = entry.name
+        if entry.kind.value not in {"heading", "section", "file_ref"}:
+            label = f"{entry.name} ({entry.kind.value})"
+        relevant_context.append(f"{rel_path} - {label}")
+        relevant_files.append(rel_path)
+        if len(relevant_context) >= 4:
+            break
+
+    annotation_notes: list[str] = []
+    if storage:
+        annotations = storage.get_all_annotations()
+        for rel_path in relevant_files:
+            note = annotations.get(rel_path)
+            if not note:
+                continue
+            annotation_notes.append(f"{rel_path}: {' '.join(note.split())[:180]}")
+            if len(annotation_notes) >= 2:
+                break
+
+    project_areas = _top_project_areas(limit=4)
+    recent_notes = _read_recent_library_notes(limit=2)
+    recent_queries = [item.get("query", "") for item in prune_history[-3:] if item.get("query")]
+
+    if relevant_context:
+        focus_line = "Focus on " + ", ".join(x.split(" - ", 1)[0] for x in relevant_context[:3]) + "."
+    elif project_areas:
+        focus_line = "Focus on likely modules: " + ", ".join(project_areas[:3]) + "."
+    else:
+        focus_line = "Use indexed project context to identify the right modules."
+
+    shared_hint = "Use the cached describe_project context already loaded in this session."
+    if not _prompt_assist_shared_context.get("text"):
+        shared_hint = "If available, call describe_project and use that shared context."
+
+    suggested_prompt = " ".join([
+        user_input.strip().rstrip(".") + ".",
+        f"This is a {intent.lower()} in the current project.",
+        focus_line,
+        guidance,
+        shared_hint,
+        "Use current project context and mention exact files or modules used.",
+        "Return a concise outcome summary.",
+    ]).strip()
+
+    summary_bits = [
+        f"Target project: {CODEBASE_ROOT}",
+        f"Indexed files: {skeleton.file_count}",
+        f"Indexed symbols: {skeleton.total_symbols}",
+    ]
+    if project_areas:
+        summary_bits.append("Top areas: " + ", ".join(project_areas))
+
+    shared_context_text = _prompt_assist_shared_context.get("text", "") or ""
+    estimated_input_tokens = (
+        _estimate_tokens(user_input)
+        + _estimate_tokens(shared_context_text[:400])
+        + sum(_estimate_tokens(item) for item in relevant_context)
+        + sum(_estimate_tokens(item) for item in annotation_notes)
+        + sum(_estimate_tokens(item) for item in recent_notes)
+    )
+    estimated_output_tokens = _estimate_tokens(suggested_prompt)
+
+    return {
+        "project_root": CODEBASE_ROOT,
+        "intent": intent,
+        "mode": mode,
+        "model_used": model,
+        "prompt_style": style,
+        "suggested_prompt": suggested_prompt,
+        "project_summary": " | ".join(summary_bits),
+        "relevant_context": relevant_context,
+        "annotation_notes": annotation_notes,
+        "recent_notes": recent_notes,
+        "recent_queries": recent_queries,
+        "cache_warm": bool(storage and (storage.folder_map or storage.get_all_annotations())),
+        "shared_context_loaded": bool(_prompt_assist_shared_context.get("text")),
+        "shared_context_excerpt": _prompt_assist_shared_context.get("text", "")[:600],
+        "shared_context_updated_at": _prompt_assist_shared_context.get("updated_at"),
+        "generation_report": {
+            "selected_preset": model,
+            "mode": mode,
+            "backend_llm_calls": 0,
+            "backend_models_used": [],
+            "actual_llm_tokens": 0,
+            "estimated_prompt_tokens": estimated_input_tokens,
+            "estimated_output_tokens": estimated_output_tokens,
+            "estimated_total_tokens": estimated_input_tokens + estimated_output_tokens,
+            "implementation": "deterministic prompt builder over cached project context",
+            "note": "Prompt Assist does not call an LLM yet; the dropdown is a preset label only.",
+        },
+        "history_count": len(prune_history),
+    }
+
+
+@app.get("/api/prompt-assist/status")
+async def prompt_assist_status():
+    """Status + cache metadata for prompt assist UI."""
+    if not _prompt_assist_shared_context.get("text"):
+        _refresh_prompt_assist_shared_context(reason="status_poll")
+    return {
+        "connected": skeleton is not None,
+        "project_root": CODEBASE_ROOT,
+        "cache_warm": bool(storage and (storage.folder_map or storage.get_all_annotations())),
+        "indexed_files": skeleton.file_count if skeleton else 0,
+        "indexed_symbols": skeleton.total_symbols if skeleton else 0,
+        "shared_context_loaded": bool(_prompt_assist_shared_context.get("text")),
+        "shared_context_updated_at": _prompt_assist_shared_context.get("updated_at"),
+        "shared_context_source": _prompt_assist_shared_context.get("source"),
+        "shared_context_reason": _prompt_assist_shared_context.get("last_reason"),
+        "shared_context_excerpt": _prompt_assist_shared_context.get("text", "")[:400],
+        "top_areas": _top_project_areas(limit=4),
+        "recent_notes": _read_recent_library_notes(limit=2),
+    }
+
+
+@app.post("/api/prompt-assist")
+async def prompt_assist_endpoint(body: PromptAssistBody):
+    """Generate a context-aware prompt suggestion from rough user text."""
+    text = body.user_input.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="user_input is required")
+    return _build_prompt_assist_payload(text, body.model, body.mode)
 
 
 @app.get("/stats")

@@ -84,6 +84,7 @@ body {
 .main-layout {
   display: grid;
   grid-template-columns: 340px 1fr;
+  grid-template-rows: minmax(0, 1fr) auto;
   overflow: hidden;
   gap: 0;
 }

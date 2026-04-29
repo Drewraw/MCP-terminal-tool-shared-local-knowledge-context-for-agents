@@ -69,6 +69,23 @@ GATEWAY_URL           = os.environ.get("GATEWAY_URL", "http://localhost:8000")
 TOKEN_ALERT_THRESHOLD = 20_000
 TOKEN_POLL_SECONDS    = 30
 
+# ── Instruction Fade ─────────────────────────────────────────────────
+# How many tokens into a session before we worry the LLM has forgotten
+# its initial project context (describe_project output fades in long sessions).
+FADE_CHECK_INTERVAL   = 15_000   # check every 15k tokens
+FADE_AUTO_THRESHOLD   = 40_000   # at this point, auto-refresh without asking
+FADE_ASK_THRESHOLD    = 20_000   # at this point, ask user first
+
+# Per-model: tokens accumulated since last context refresh
+# { model_id: int }
+_tokens_since_refresh: Dict[str, int] = defaultdict(int)
+
+# Per-model: how many fades have happened (so message escalates)
+_fade_count: Dict[str, int] = defaultdict(int)
+
+# Per-model: whether we're currently waiting for user answer on fade prompt
+_fade_pending_ask: Dict[str, bool] = defaultdict(bool)
+
 # ════════════════════════════════════════════════════════════════════
 # SSE CLIENT REGISTRY  — connected LLM clients listening on /sse
 # ════════════════════════════════════════════════════════════════════
@@ -611,11 +628,108 @@ def _parse_knowledge_summary(content: str) -> dict:
     return summary
 
 
+def _build_fade_refresh_context() -> str:
+    """
+    Build a compact (~600 token) context reminder for instruction fade refresh.
+    Contains only the high-signal parts: folder map summary, key annotations,
+    prune library headlines. NOT the full 5500-token context.
+    """
+    parts = []
+
+    # 1. Prune library headlines (most important — user's own notes)
+    lib_path = CODEBASE_ROOT / "prune library"
+    if lib_path.exists():
+        headlines = []
+        for md in sorted(lib_path.glob("*.md"))[:3]:
+            try:
+                text = md.read_text(encoding="utf-8", errors="ignore")
+                # First heading + first sentence under it only
+                for line in text.splitlines():
+                    line = line.strip()
+                    if line.startswith("#"):
+                        headlines.append(line)
+                    elif line and not line.startswith("#") and headlines:
+                        headlines.append("  " + line[:120])
+                        break
+            except OSError:
+                pass
+        if headlines:
+            parts.append("## Project Notes (prune library)\n" + "\n".join(headlines[:10]))
+
+    # 2. Folder map summary — top folders and their roles
+    fm_path = PRUNETOOL_DATA / "folder_map.json"
+    if fm_path.exists():
+        try:
+            fm = json.loads(fm_path.read_text(encoding="utf-8"))
+            folders = fm.get("folders", {})
+            stats   = fm.get("stats", {})
+            lines   = [f"## Folder Map ({stats.get('total_folders',0)} folders, {stats.get('total_edges',0)} edges)"]
+            # Top 8 folders by file count
+            top = sorted(folders.items(), key=lambda x: x[1].get("file_count", 0), reverse=True)[:8]
+            for name, data in top:
+                ann  = data.get("annotation", "")
+                fc   = data.get("file_count", 0)
+                imp  = ", ".join(data.get("imports_from", [])[:3])
+                note = f" — {ann}" if ann else (f" → imports {imp}" if imp else "")
+                lines.append(f"  {name} ({fc} files){note}")
+            parts.append("\n".join(lines))
+        except Exception:
+            pass
+
+    # 3. Auto-annotations sample — first 10 file descriptions
+    aa_path = PRUNETOOL_DATA / "auto_annotations.json"
+    if aa_path.exists():
+        try:
+            aa = json.loads(aa_path.read_text(encoding="utf-8"))
+            annots = aa.get("annotations", aa) if isinstance(aa, dict) else {}
+            lines  = ["## Key File Summaries"]
+            for fp, desc in list(annots.items())[:10]:
+                lines.append(f"  {fp}: {str(desc)[:100]}")
+            if lines:
+                parts.append("\n".join(lines))
+        except Exception:
+            pass
+
+    if not parts:
+        return ""
+
+    header = (
+        "## ⟳ Context Refresh (instruction fade guard)\n"
+        "Your session is long. Here is a compact reminder of the project context.\n"
+    )
+    return header + "\n\n".join(parts)
+
+
+async def _fetch_context_version() -> dict:
+    """Fetch current context version from gateway."""
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r = await client.get(f"{GATEWAY_URL}/context-version")
+            if r.status_code == 200:
+                return r.json()
+    except Exception:
+        pass
+    return {"version": "", "sections": {}}
+
+
+def _extract_section(content: str, heading: str) -> str:
+    """Extract a ## section block from terminal_context.md."""
+    pattern = rf"(^|\n)(## {re.escape(heading)}.*?)(?=\n## |\Z)"
+    m = re.search(pattern, content, re.DOTALL)
+    return m.group(2).strip() if m else ""
+
+
 async def describe_project(arguments: dict) -> dict:
     """
-    Returns terminal_context.md as the full project context for the LLM.
+    Returns project context for the LLM.
+    Supports delta mode: pass since_version to get only what changed.
+    - First call (no since_version): full context ~5500 tokens
+    - since_version matches current: {"status":"up_to_date"} ~30 tokens
+    - since_version differs: only changed sections ~300 tokens
     """
-    model = (arguments.get("model") or "unknown").strip()
+    model         = (arguments.get("model")         or "unknown").strip()
+    since_version = (arguments.get("since_version") or "").strip()
+
     if model != "unknown":
         print(f"[describe_project] LLM connected: {model}", flush=True)
 
@@ -628,8 +742,21 @@ async def describe_project(arguments: dict) -> dict:
             "project_root": str(CODEBASE_ROOT),
         }
 
+    # Fetch current version from gateway
+    version_info  = await _fetch_context_version()
+    current_ver   = version_info.get("version", "")
+    cur_sections  = version_info.get("sections", {})
+
+    # ── Case 1: LLM already has the latest version ───────────────────
+    if since_version and since_version == current_ver:
+        print(f"[describe_project] {model} context up-to-date (v{current_ver}) — 30 tokens", flush=True)
+        return {
+            "status":          "up_to_date",
+            "version":         current_ver,
+            "message":         "Your project context is current. No re-read needed.",
+        }
+
     raw_content = terminal_ctx.read_text(encoding="utf-8")
-    # Strip internal timestamps so cache prefix stays stable
     content = re.sub(r'\n_\(updated [^)]+\)_\n?', '\n', raw_content)
     content = re.sub(r'\n_Last updated:.*?_\n?', '\n', content)
     content = re.sub(r'\n_Saved:.*?_\n?', '\n', content)
@@ -637,11 +764,65 @@ async def describe_project(arguments: dict) -> dict:
 
     setup_issues, _ = run_setup_check()
 
-    # ── Parse terminal_context.md to build a knowledge summary ───────
+    # ── Case 2: LLM has an older version — return delta only ─────────
+    if since_version and since_version != current_ver and current_ver:
+        # Determine which sections changed by comparing hashes
+        # We don't store old section hashes per-LLM, so we return all
+        # sections that have non-empty content as a compact delta
+        section_names = ["Folder Map", "Auto Annotations", "Prune Library", "README"]
+        delta_parts   = []
+        for sec in section_names:
+            block = _extract_section(content, sec)
+            if block:
+                delta_parts.append(block)
+
+        delta_context = "\n\n".join(delta_parts)
+        knowledge_summary = _parse_knowledge_summary(content)
+
+        print(
+            f"[describe_project] {model} delta update "
+            f"v{since_version} → v{current_ver} (~{len(delta_context)//4} tokens)",
+            flush=True
+        )
+        print(
+            f"┌─ Context delta sent to {model} ───────────────────────────────────",
+            flush=True
+        )
+        print(f"│  Old version : {since_version}", flush=True)
+        print(f"│  New version : {current_ver}", flush=True)
+        print(f"│  Tokens sent : ~{len(delta_context)//4} (was ~5500 full)", flush=True)
+        print(f"└──────────────────────────────────────────────────────────────────", flush=True)
+
+        return {
+            "status":            "updated",
+            "version":           current_ver,
+            "previous_version":  since_version,
+            "delta_context":     delta_context,
+            "knowledge_summary": knowledge_summary,
+            "message":           f"Context updated from v{since_version} to v{current_ver}. Apply the delta sections above.",
+            "compiled_at":       time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+    # ── Case 3: First call — return full context ──────────────────────
     knowledge_summary = _parse_knowledge_summary(content)
+
+    print(
+        f"[describe_project] {model} full context sent "
+        f"(v{current_ver}, ~{len(content)//4} tokens)",
+        flush=True
+    )
+    print(
+        f"┌─ Full context sent to {model} ────────────────────────────────────",
+        flush=True
+    )
+    print(f"│  Version  : {current_ver}", flush=True)
+    print(f"│  Tokens   : ~{len(content)//4}", flush=True)
+    print(f"│  Tip      : Pass since_version='{current_ver}' next call for delta", flush=True)
+    print(f"└──────────────────────────────────────────────────────────────────", flush=True)
 
     return {
         "status":            "ready",
+        "version":           current_ver,
         "project_root":      str(CODEBASE_ROOT),
         "setup_required":    len(setup_issues) > 0,
         "setup_issues": [
@@ -701,6 +882,7 @@ async def report_tokens(arguments: dict) -> dict:
     effective_tokens = raw_count - int(cached_input_tokens * 0.9)
 
     _session_tokens += effective_tokens
+    _tokens_since_refresh[model] += effective_tokens
     log.debug("[token_monitor] +%d effective tokens (%s) → session total: %d", effective_tokens, model, _session_tokens)
 
     # Write to token_log.jsonl so the dashboard picks it up
@@ -793,6 +975,118 @@ async def report_tokens(arguments: dict) -> dict:
             pass
 
     burned = _rt_model_burned.get(model, _session_tokens)
+
+    # ── Instruction Fade Guard ───────────────────────────────────────
+    since_refresh = _tokens_since_refresh.get(model, 0)
+
+    # Only check at FADE_CHECK_INTERVAL boundaries to avoid spam
+    prev_bucket = (since_refresh - effective_tokens) // FADE_CHECK_INTERVAL
+    curr_bucket = since_refresh // FADE_CHECK_INTERVAL
+    fade_bucket_crossed = curr_bucket > prev_bucket and curr_bucket > 0
+
+    if fade_bucket_crossed and not _fade_pending_ask.get(model):
+        fade_no      = _fade_count[model] + 1
+        refresh_ctx  = _build_fade_refresh_context()
+        ctx_tokens   = len(refresh_ctx) // 4 if refresh_ctx else 0
+
+        # ── Auto-refresh at high token count ────────────────────────
+        if since_refresh >= FADE_AUTO_THRESHOLD:
+            _fade_count[model]          += 1
+            _tokens_since_refresh[model] = 0  # reset counter
+
+            print(f"\n┌─ Instruction Fade Guard — Auto Refresh #{fade_no} ({model}) ────────────────", flush=True)
+            print(f"│  Session tokens since last refresh : {since_refresh:,}", flush=True)
+            print(f"│  Threshold                         : {FADE_AUTO_THRESHOLD:,} (auto mode)", flush=True)
+            print(f"│  Compact context injected          : ~{ctx_tokens} tokens", flush=True)
+            print(f"│  Full describe_project             : ~5,500 tokens (avoided)", flush=True)
+            print(f"└────────────────────────────────────────────────────────────────────────────\n", flush=True)
+
+            if refresh_ctx:
+                return {
+                    "ok":              True,
+                    "fade_refresh":    True,
+                    "fade_number":     fade_no,
+                    "tokens_in_session": since_refresh,
+                    "context_reminder": refresh_ctx,
+                    "instruction": (
+                        "IMPORTANT: Re-read the context_reminder field above. "
+                        "Your session is long and earlier instructions may have faded. "
+                        "Silently absorb this context — do not print it to the user. "
+                        "Continue the conversation normally."
+                    ),
+                }
+
+        # ── Ask user at lower threshold ──────────────────────────────
+        elif since_refresh >= FADE_ASK_THRESHOLD:
+            _fade_pending_ask[model] = True
+
+            print(f"\n┌─ Instruction Fade Guard — Asking User #{fade_no} ({model}) ──────────────────", flush=True)
+            print(f"│  Session tokens since last refresh : {since_refresh:,}", flush=True)
+            print(f"│  Threshold                         : {FADE_ASK_THRESHOLD:,} (ask mode)", flush=True)
+            print(f"│  Auto-refresh kicks in at          : {FADE_AUTO_THRESHOLD:,} tokens", flush=True)
+            print(f"│  Compact refresh cost              : ~{ctx_tokens} tokens", flush=True)
+            print(f"└────────────────────────────────────────────────────────────────────────────\n", flush=True)
+
+            return {
+                "ok":              True,
+                "fade_check":      True,
+                "fade_number":     fade_no,
+                "tokens_in_session": since_refresh,
+                "SHOW_NOW":        True,
+                "user_message": (
+                    f"\n🔄  Context Refresh Check — {since_refresh:,} tokens into this session\n\n"
+                    f"Long sessions can cause earlier project context (folder structure, file roles) "
+                    f"to fade from attention.\n\n"
+                    f"Would you like a context refresh?\n"
+                    f"  • Yes → I'll re-read key project context (~{ctx_tokens} tokens, not 5,500)\n"
+                    f"  • No  → Continue as-is\n"
+                    f"  • Auto → I'll refresh automatically every {FADE_AUTO_THRESHOLD:,} tokens from now\n"
+                ),
+                "instruction": (
+                    "STOP. Print the user_message above verbatim. "
+                    "Wait for the user to reply 'yes', 'no', or 'auto'. "
+                    "If 'yes': call report_tokens with fade_response='yes' and your model. "
+                    "If 'auto': call report_tokens with fade_response='auto' and your model. "
+                    "If 'no': call report_tokens with fade_response='no' and your model."
+                ),
+            }
+
+    # ── Handle user reply to fade ask ───────────────────────────────
+    fade_response = (arguments.get("fade_response") or "").strip().lower()
+    if fade_response and _fade_pending_ask.get(model):
+        _fade_pending_ask[model] = False
+
+        if fade_response == "no":
+            _tokens_since_refresh[model] = 0  # reset, don't ask again until next interval
+            return {"ok": True, "fade_skipped": True}
+
+        if fade_response in ("yes", "auto"):
+            if fade_response == "auto":
+                # Lower the ask threshold so future checks go straight to auto
+                # We signal this by bumping the counter high enough to hit FADE_AUTO_THRESHOLD
+                _tokens_since_refresh[model] = FADE_AUTO_THRESHOLD
+
+            refresh_ctx = _build_fade_refresh_context()
+            ctx_tokens  = len(refresh_ctx) // 4 if refresh_ctx else 0
+            fade_no     = _fade_count[model] + 1
+            _fade_count[model]          += 1
+            _tokens_since_refresh[model] = 0
+
+            print(f"\n┌─ Instruction Fade Refresh #{fade_no} — User confirmed ({model}) ──────────────", flush=True)
+            print(f"│  Compact context sent : ~{ctx_tokens} tokens", flush=True)
+            print(f"└────────────────────────────────────────────────────────────────────────────\n", flush=True)
+
+            return {
+                "ok":              True,
+                "fade_refresh":    True,
+                "fade_number":     fade_no,
+                "context_reminder": refresh_ctx,
+                "instruction": (
+                    "Re-read the context_reminder field above silently. "
+                    "Then tell the user: 'Context refreshed — I've re-read the project structure.' "
+                    "Continue the conversation normally."
+                ),
+            }
 
     # Silent response — no output to user unless threshold hit
     return {"ok": True}
@@ -1379,19 +1673,26 @@ TOOL_SCHEMAS = {
         "name": "describe_project",
         "description": (
             "Returns full project context: folder map, symbol index, prune library docs. "
-            "Only call this when the user explicitly asks for project context or KB. "
-            "Do NOT call automatically on session start."
+            "IMPORTANT: Pass 'since_version' if you already have context from a previous call. "
+            "- No since_version → full context (~5500 tokens, first call only). "
+            "- since_version matches current → {status:'up_to_date'} (~30 tokens, free check). "
+            "- since_version differs → only changed sections (~300 tokens). "
+            "Always store the returned 'version' and pass it as 'since_version' on every future call."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "model": {
                     "type": "string",
-                    "description": "Your model name (e.g. claude-sonnet-4-6, gpt-4o, gemini-2.0-flash). Pass this so PruneTool can track which LLM is active.",
+                    "description": "Your model name (e.g. claude-sonnet-4-6, gpt-4o, gemini-2.0-flash).",
+                },
+                "since_version": {
+                    "type": "string",
+                    "description": "The version string returned by your last describe_project call. Pass this to get delta-only updates instead of the full 5500-token context.",
                 },
                 "timestamp": {
                     "type": "string",
-                    "description": "Current date and time when you are calling this tool (e.g. '2026-04-09 15:30:00 Wednesday'). Used to log the session login time.",
+                    "description": "Current date and time (e.g. '2026-04-09 15:30:00 Wednesday').",
                 },
             },
             "required": [],
@@ -1443,6 +1744,14 @@ TOOL_SCHEMAS = {
                 "model": {
                     "type":        "string",
                     "description": "Your exact model ID (e.g. claude-sonnet-4-6, gpt-4o, gemini-2.0-flash).",
+                },
+                "fade_response": {
+                    "type":        "string",
+                    "enum":        ["yes", "no", "auto"],
+                    "description": (
+                        "Only send this when you received a fade_check=true response asking about context refresh. "
+                        "'yes' = refresh now, 'no' = skip, 'auto' = refresh automatically from now on."
+                    ),
                 },
             },
             "required": ["input_tokens", "output_tokens", "model"],

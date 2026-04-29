@@ -146,9 +146,9 @@ class SkeletonFileWatcher:
         # Persist to disk
         self.indexer.save(self.skeleton)
 
-        # Notify callback (e.g., WebSocket push to UI)
+        # Notify callback with changed file list for targeted re-annotation
         if self.on_update:
-            self.on_update(self.skeleton)
+            self.on_update(self.skeleton, list(changes.keys()))
 
     async def _poll_fallback(self):
         """Polling fallback when watchfiles is not available."""

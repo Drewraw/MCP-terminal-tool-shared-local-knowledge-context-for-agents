@@ -14,6 +14,10 @@ __pycache__/
 ui/node_modules/
 ui/dist/
 
+# PyInstaller build output — binaries go to GitHub Releases, not git
+build/
+dist/
+
 .prunetool/
 prune library/
 

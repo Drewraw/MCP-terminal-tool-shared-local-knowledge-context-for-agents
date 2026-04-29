@@ -110,6 +110,7 @@ async def _session_start(args: dict) -> dict:
     return result
 
 async def _describe_project(args: dict) -> dict:
+    _log("describe_project called", tool="describe_project")
     ctx_path = PRUNETOOL_DATA / "terminal_context.md"
     ctx = ctx_path.read_text(encoding="utf-8") if ctx_path.exists() else ""
     skeleton = _read_json_file(PRUNETOOL_DATA / "skeleton.json")

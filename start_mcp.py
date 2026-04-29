@@ -554,6 +554,48 @@ def _auto_register_mcp():
     print("[PruneTool] ─────────────────────────────────────────────────")
 
 
+def _start_prune_proxy() -> subprocess.Popen | None:
+    """
+    Start the PruneTool Local AI Proxy (proxy_server.py) on port 8080.
+    This is the OpenAI-compatible endpoint IDEs point at.
+    """
+    port = int(os.environ.get("PRUNE_PROXY_PORT", 8080))
+
+    # Check if already occupied
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if s.connect_ex(("127.0.0.1", port)) == 0:
+            print(f"[PruneTool] Proxy port {port} already in use — skipping proxy start")
+            return None
+
+    print(f"[PruneTool] Starting PruneTool AI Proxy on port {port}...")
+    proc = subprocess.Popen(
+        [PYTHON, str(PRUNETOOL_DIR / "proxy_server.py")],
+        cwd=str(PROJECT_ROOT),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8", errors="replace", bufsize=1,
+    )
+    threading.Thread(
+        target=_stream_output, args=(proc, "[proxy]"), daemon=True
+    ).start()
+
+    # Wait up to 5s for it to be ready
+    for _ in range(10):
+        time.sleep(0.5)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(("127.0.0.1", port)) == 0:
+                print(f"[PruneTool] ✓ AI Proxy ready → http://localhost:{port}/v1")
+                print(f"[PruneTool]   Point Cursor / Continue / JetBrains here ↑")
+                return proc
+        if proc.poll() is not None:
+            break
+
+    print(f"[PruneTool] WARNING: AI Proxy did not start on port {port}")
+    return proc
+
+
 def start_mcp():
     import uvicorn
     _auto_register_mcp()
@@ -578,16 +620,19 @@ if __name__ == "__main__":
     _ensure_llm_finder()
     _ensure_terminal_deps()
 
-    gateway_proc = start_gateway()
-    proxy_proc   = start_proxy()
+    gateway_proc      = start_gateway()
+    bifrost_proc      = start_proxy()      # Bifrost token tracker on 8090
+    prune_proxy_proc  = _start_prune_proxy()  # PruneTool AI proxy on 8080
 
     try:
         start_mcp()
     except KeyboardInterrupt:
         print("\n[PruneTool] Shutting down...")
     finally:
-        if proxy_proc:
-            proxy_proc.terminate()
+        if prune_proxy_proc:
+            prune_proxy_proc.terminate()
+        if bifrost_proc:
+            bifrost_proc.terminate()
         if gateway_proc:
             gateway_proc.terminate()
             print("[PruneTool] Gateway stopped.")
