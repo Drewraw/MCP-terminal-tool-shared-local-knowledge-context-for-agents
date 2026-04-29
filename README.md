@@ -1,236 +1,158 @@
 # PruneTool
 
-MCP-based middleware for persistent project context across AI coding agents.
+Codebase-aware AI chat for developers — works with your existing Claude, Gemini, or OpenAI subscription. No API key required.
 
-PruneTool keeps codebase knowledge alive across sessions and tools. You can switch between Claude Code, Codex CLI, Gemini CLI, VS Code, and Cursor without re-explaining the project every time.
+PruneTool indexes your project, picks only the relevant code for each question, and routes your prompt to the right AI model automatically — based on complexity and your daily token budget.
 
-Inspired by the SWE-Pruner idea: instead of dumping raw files into context repeatedly, PruneTool indexes the codebase, narrows to relevant symbols, and preserves session knowledge in a local library.
+## Download
 
-## What It Does
+**[Download PruneTool v1.0 for Windows](https://github.com/Drewraw/prunetool-mcp/releases/latest)**
 
-- Builds a skeletal code index using Tree-sitter plus regex fallbacks
-- Creates a folder dependency graph for the project
-- Uses a Scout model to rank relevant symbols before reading full files
-- Prunes file content down to the logic most relevant to the current query
-- Exposes an MCP server so supported agents can consume shared project context
-- Stores long-term notes in `prune library/` so context survives resets and handoffs
-- Tracks token usage and can surface model-budget suggestions
+Unzip and run. No Python, no Node.js, no installs.
 
-## Core Components
-
-```text
-Developer Query
-  -> PruneTool Gateway
-     1. Skeletal index
-     2. Folder dependency map
-     3. Scout model ranking
-     4. On-demand file extraction
-     5. Precision pruning
-     6. Context assembly
-  -> LLM / agent
-```
-
-Main runtime pieces:
-
-- `server/gateway.py`: FastAPI gateway for scanning, pruning, graph data, and UI APIs
-- `mcp_server.py`: HTTP MCP server
-- `mcp_stdio.py`: stdio MCP entry point for CLI clients
-- `proxy_server.py`: local proxy for live token metering
-- `start_mcp.py`: unified startup script
-- `ui/`: React + Vite dashboard
-
-## Supported Clients
-
-- Claude Code
-- Codex CLI
-- Gemini CLI
-- VS Code
-- Cursor
-
-PruneTool can auto-register MCP configuration for supported tools during startup, and it also writes a fallback `.mcp.json` file into the target project.
+---
 
 ## Quick Start
 
-### Requirements
+### 1. Download and unzip
 
-- Python 3.10+
-- Node.js 18+
-- A Groq Cloud API key for Scout-based ranking
-- Groq model: `llama-3.1-8b-instant` (the project was tuned against this model)
+Download `prunetool-v1.0-windows.zip` from the [releases page](https://github.com/Drewraw/prunetool-mcp/releases/latest) and unzip anywhere.
 
-### 1. Install dependencies
-
-Backend:
-
-```bash
-pip install -r server/requirements.txt
+```
+prunetool-app/
+  prunetool.exe    ← gateway server
+  prune.exe        ← AI chat CLI
+  _internal/       ← bundled runtime (Python, libs, grammars)
 ```
 
-Frontend:
+### 2. Tell PruneTool which project to index
 
-```bash
-cd ui
-npm install
-npm run build
-cd ..
-```
-
-### 2. Configure environment
-
-Create a `.env` file:
+Create `~/.prunetool/.env` (i.e. `C:\Users\yourname\.prunetool\.env`):
 
 ```env
-GROQ_API_KEY=your_groq_key_here
-# Use Groq model: llama-3.1-8b-instant
-PRUNE_CODEBASE_ROOT=/path/to/project 
-
-# Optional proxy settings for live token metering
-ANTHROPIC_BASE_URL=http://localhost:8090/v1
-OPENAI_BASE_URL=http://localhost:8090/v1
-GEMINI_API_BASE_URL=http://localhost:8090/v1
+PRUNE_CODEBASE_ROOT=C:\path\to\your\project
 ```
 
-Notes:
+### 3. Start chatting
 
-- `PRUNE_CODEBASE_ROOT` is the project PruneTool will index and monitor
-- Use Groq Cloud with `llama-3.1-8b-instant`; PruneTool was tuned against this model
-
-### 3. Start the stack
-
-Before starting PruneTool, decide which project folder you want it to index. This is required.
-
-PruneTool does not index itself by default. It indexes the target codebase pointed to by `PRUNE_CODEBASE_ROOT`, or in some workflows, the folder you launch it from.
-
-Recommended Windows workflow:
-
-1. Open a terminal in the project you want to index
-2. Set `PRUNE_CODEBASE_ROOT` to that project path
-3. Start PruneTool using the Python inside the `C:\prunetool\.venv`
-
-PowerShell example:
-
-```powershell
-$env:PRUNE_CODEBASE_ROOT="C:\path\to\your\project"
-C:\prunetool\.venv\Scripts\python.exe C:\prunetool\start_mcp.py
+```
+prune.exe chat
 ```
 
-Example with your current project:
+That's it. PruneTool will:
+- Open the gateway server in a new terminal window automatically
+- Scan and index your project on first run
+- Show a model picker — choose your AI or press Enter for auto-routing
+- Inject relevant code context into every prompt
 
-```powershell
-$env:PRUNE_CODEBASE_ROOT="C:\Users\yourname\source\my-app"
-C:\prunetool\.venv\Scripts\python.exe C:\prunetool\start_mcp.py
+---
+
+## No API Key? No Problem
+
+PruneTool works with your existing subscriptions via the provider CLIs.
+
+| You have | What to install |
+|---|---|
+| Claude Pro ($20/mo) | [Claude CLI](https://claude.ai/download) — log in once |
+| Gemini Advanced | `npm install -g @google/gemini-cli` — log in once |
+| OpenAI / Anthropic API key | Add to `~/.prunetool/.env` |
+
+PruneTool auto-detects which CLIs are installed and uses them. If you have both a CLI and an API key, the CLI is used first.
+
+---
+
+## How It Works
+
+```
+you type a question
+        ↓
+PruneTool Gateway
+   1. Reads your codebase index (skeleton of all symbols)
+   2. Scout model picks the relevant files for your question
+   3. Extracts only the relevant sections (not the whole file)
+   4. Assembles a compact context (~3-8K tokens instead of 100K+)
+        ↓
+Model picker / auto-router
+   - simple question  → fast cheap model (Haiku, Gemini Flash)
+   - medium question  → balanced model (Sonnet, GPT-4o)
+   - complex question → powerful model (Opus, o1)
+   - checks daily token budget — warns at 90%, switches at 95%
+        ↓
+LLM answers with full codebase awareness
 ```
 
-If you are already inside the target project folder, this also works:
+**Token savings:** a 100K-token codebase gets reduced to ~3-8K tokens per query. Typical saving: ~$22/month on Claude API costs.
 
-```bash
-cd C:/path/to/your/project
-C:/prunetool/.venv/Scripts/python.exe C:/prunetool/start_mcp.py
+---
+
+## Model Configuration
+
+Edit `~/.prunetool/llms_prunetoolfinder.js` to list the models you have access to:
+
+```js
+module.exports = {
+  models: [
+    { id: "claude-haiku",  label: "Claude Haiku",  model: "claude-haiku-4-5-20251001", complexity: "simple",  dailyTokenGoal: 20000 },
+    { id: "claude-sonnet", label: "Claude Sonnet", model: "claude-sonnet-4-6",         complexity: "medium",  dailyTokenGoal: 10000 },
+    { id: "claude-opus",   label: "Claude Opus",   model: "claude-opus-4-6",           complexity: "complex", dailyTokenGoal: 5000  },
+  ]
+};
 ```
 
-This starts:
+- `complexity` — which query type this model handles: `simple`, `medium`, or `complex`
+- `dailyTokenGoal` — PruneTool warns you at 90% and switches models at 95%
+- `maxContext` — optional, auto-detected from provider APIs if not set
 
-- Gateway UI/API on `http://localhost:8000`
-- MCP server on `http://localhost:8765/mcp`
-- Local proxy on `http://localhost:8090`
+---
 
-Important:
+## Chat Commands
 
-- If `PRUNE_CODEBASE_ROOT` points to the wrong folder, PruneTool will index the wrong codebase
-- Users should set the path to the app or repository they actually want their agents to work on
-- After startup, open the dashboard and run a project scan for that target folder
-
-### 4. Scan the project
-
-Open `http://localhost:8000` and run a project scan. This builds:
-
-- skeleton index
-- folder graph
-- cached annotations
-- terminal context snapshot
-
-### 5. Use it from your agent
-
-Ask your agent for project context. The MCP server can provide:
-
-- indexed file and symbol summaries
-- folder dependency information
-- saved knowledge from `prune library/`
-
-At the end of a session, use:
-
-```text
-/save docs
+```
+prune.exe chat              Start chat (model picker appears)
+prune.exe models            List all models and today's usage
+prune.exe status            Show gateway status and active model
+prune.exe model sonnet      Lock to a specific model
+prune.exe model auto        Switch back to auto-routing
 ```
 
-That updates the persistent library so the next session or next agent starts with the same project history.
-
-## Session Workflow
-
-PruneTool's MCP flow is built around these tools:
-
-- `session_start`: log a session and initialize model tracking
-- `describe_project`: return indexed project context on demand
-- `report_tokens`: record usage after each response
-- `analyze_complexity`: suggest an appropriate model tier
-- `save_docs`: persist session knowledge to the prune library
-- `session_end`: close the session cleanly
-
-## Dashboard
-
-The dashboard includes:
-
-- Token usage and daily model-budget views
-- Folder dependency graph
-- Indexed files and pruned output inspection
-- Terminal/MCP log visibility
-
-## Project Structure
-
-```text
-prunetool/
-|-- cache/
-|   `-- cache_stabilizer.py
-|-- indexer/
-|   |-- skeletal_indexer.py
-|   |-- folder_mapper.py
-|   |-- mindmap_generator.py
-|   `-- models.py
-|-- pruner/
-|   |-- pruning_engine.py
-|   |-- scout.py
-|   |-- context_loader.py
-|   |-- auto_annotator.py
-|   `-- storage_manager.py
-|-- server/
-|   |-- gateway.py
-|   |-- requirements.txt
-|   `-- user_manager.py
-|-- ui/
-|   `-- src/
-|-- mcp_server.py
-|-- mcp_stdio.py
-|-- proxy_server.py
-`-- start_mcp.py
+Inside chat:
+```
+/model sonnet       Switch model mid-session
+/model auto         Switch back to auto-routing
+/models             Show model list and usage
+/status             Show gateway status
+/clear              Clear conversation history
+/quit               Exit
 ```
 
-Runtime data for the indexed project is stored inside the target codebase:
+---
 
-```text
+## What Gets Stored on Your Machine
+
+```
+~/.prunetool/
+  .env                    your API keys and settings
+  daily_stats.json        token usage per model (resets daily)
+  model_contexts.json     cached context window sizes (24h TTL)
+  active_model.txt        last selected model
+
 <your-project>/
-|-- .prunetool/
-|   |-- skeleton.json
-|   |-- folder_map.json
-|   |-- auto_annotations.json
-|   `-- terminal_context.md
-`-- prune library/
-    |-- library.md
-    `-- PROGRESS.md
+  .prunetool/
+    skeleton.json         symbol index (functions, classes, enums)
+    folder_map.json       folder dependency graph
+    auto_annotations.json one-line summaries per file
+  prune library/
+    library.md            session knowledge (written by /save docs)
+    PROGRESS.md           current status and next steps
 ```
 
-## Manual MCP Configuration
+Nothing is sent anywhere except your LLM provider. No telemetry.
 
-If auto-registration does not apply to your client, add MCP manually.
+---
+
+## MCP Integration (for Claude Code, Codex CLI, etc.)
+
+PruneTool also runs an MCP server for AI agents that support the Model Context Protocol.
 
 HTTP transport:
 
@@ -244,29 +166,96 @@ HTTP transport:
 }
 ```
 
-stdio transport example:
+stdio transport (Codex CLI):
 
 ```bash
-codex mcp add prunetool -- python /path/to/prunetool/mcp_stdio.py
+codex mcp add prunetool -- /path/to/prunetool.exe mcp
 ```
 
-## API Overview
+MCP tools available to agents:
 
-Important gateway endpoints:
+- `session_start` — initialize session and model tracking
+- `describe_project` — full project context (index, annotations, prune library)
+- `get_surgical_context` — fetch relevant symbols for a query
+- `analyze_complexity` — suggest appropriate model tier
+- `report_tokens` — record usage after each response
+- `save_docs` — persist session knowledge to prune library
 
-- `POST /prune`
-- `POST /scout-select`
-- `POST /re-scan`
-- `POST /search`
-- `GET /skeleton`
-- `GET /graph`
-- `GET /annotations`
-- `POST /annotations`
-- `GET /api/burned-stats`
-- `GET /api/model-usage`
-- `POST /api/mcp-log`
-- `WS /ws`
+---
+
+## Dashboard
+
+Open `http://localhost:8000` after starting PruneTool to see:
+
+- Token usage and daily model-budget charts
+- Folder dependency graph
+- Indexed files and symbol browser
+- Live scan progress
+- Pruned context inspector
+
+---
+
+## Gateway API
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/prune` | Full pipeline: Scout → extract → assemble |
+| POST | `/scout-select` | Scout only: pick relevant files |
+| POST | `/re-scan` | Rebuild index + annotations |
+| GET | `/scan-status` | Live scan progress |
+| POST | `/search` | Keyword search over symbol index |
+| GET | `/skeleton` | Index summary |
+| GET | `/graph` | Folder dependency graph |
+| GET | `/annotations` | Folder annotations |
+| POST | `/annotations` | Save annotation |
+| WS | `/ws` | Live index update stream |
+
+---
+
+## Project Structure
+
+```
+prunetool/
+  server/gateway.py         FastAPI gateway — all HTTP endpoints
+  mcp_server.py             HTTP MCP server
+  mcp_stdio.py              stdio MCP entry point
+  proxy_server.py           OpenAI-compatible local proxy (port 8080)
+  prune_cli.py              AI chat CLI (prune.exe)
+  prunetool_main.py         Binary entry point (prunetool.exe)
+  llms_prunetoolfinder.js   Shipped default model config
+  indexer/
+    skeletal_indexer.py     Tree-sitter + regex code parser
+    folder_mapper.py        Import graph builder
+  pruner/
+    pruning_engine.py       Scout ranking + file extraction
+    scout.py                Groq/Ollama symbol ranker
+    auto_annotator.py       Batch file annotation via Groq
+  ui/                       React + Vite dashboard
+```
+
+---
+
+## Building from Source
+
+Requirements: Python 3.10+, Node.js 18+
+
+```bash
+# Backend
+pip install -r server/requirements.txt
+
+# Frontend
+cd ui && npm install && npm run build && cd ..
+
+# Run from source
+python start_mcp.py
+
+# Build binary
+pyinstaller prunetool.spec --clean -y
+# Output: dist/prunetool/prunetool.exe + prune.exe
+```
+
+---
 
 ## License
 
-Proprietary. See [LICENSE](/C:/prunetool/LICENSE).
+Proprietary. All rights reserved.
