@@ -344,18 +344,31 @@ def _generate_llm_config(env: dict):
         print(f"  No model list for {provider}. Edit ~/.prunetool/llms_prunetoolfinder.js manually.")
         return
 
-    via = "CLI subscription" if _shutil.which("claude" if provider == "anthropic" else provider) else "API key"
+    cli_name = "claude" if provider == "anthropic" else provider
+    has_cli = bool(_shutil.which(cli_name))
+    key_map = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY",
+               "gemini": "GEMINI_API_KEY", "groq": "GROQ_API_KEY"}
+    has_api = bool(env.get(key_map.get(provider, "")))
+
+    access_lines = []
+    if has_cli:
+        access_lines.append(f'//   CLI subscription  → {cli_name} -p "your question" --model <model-id>  ✓ detected')
+    else:
+        access_lines.append(f'//   CLI subscription  → not detected (install {cli_name} CLI to use)')
+    if has_api:
+        access_lines.append(f'//   API key           → {key_map.get(provider, "API_KEY")} set in ~/.prunetool/.env  ✓ detected')
+    else:
+        access_lines.append(f'//   API key           → not set (add {key_map.get(provider, "API_KEY")} to ~/.prunetool/.env)')
 
     # Write the config file
     lines = [
-        f'// provider: {provider}  ({via})',
-        f'// PruneTool uses this to know how to call your LLM.',
+        f'// provider: {provider}',
         f'//',
-        f'// Examples:',
-        f'//   CLI subscription  → claude -p "your question" --model claude-sonnet-4-6',
-        f'//   API key           → POST https://api.anthropic.com/v1/messages  (ANTHROPIC_API_KEY in ~/.prunetool/.env)',
+        f'// Access methods:',
+        *access_lines,
         f'//',
-        f'// To switch: update the provider comment and re-run prune chat.',
+        f'// PruneTool uses CLI first, API key as fallback.',
+        f'// To switch provider: delete this file and re-run prune chat.',
         "module.exports = {", "  models: ["
     ]
     for m in models:
