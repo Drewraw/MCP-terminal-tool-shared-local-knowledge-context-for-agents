@@ -262,26 +262,111 @@ def _normalize_js_models(config: dict, live: dict | None = None) -> dict:
     return result
 
 
-_PROVIDER_MODELS = {
+# Fallback model list if live fetch fails
+_PROVIDER_MODELS_FALLBACK = {
     "anthropic": [
-        {"id": "claude-haiku",  "label": "Claude Haiku",  "model": "claude-haiku-4-5-20251001", "complexity": "simple",  "dailyTokenGoal": 50000},
-        {"id": "claude-sonnet", "label": "Claude Sonnet", "model": "claude-sonnet-4-6",         "complexity": "medium",  "dailyTokenGoal": 50000},
-        {"id": "claude-opus",   "label": "Claude Opus",   "model": "claude-opus-4-6",           "complexity": "complex", "dailyTokenGoal": 50000},
+        {"model": "claude-haiku-4-5-20251001", "label": "Claude Haiku"},
+        {"model": "claude-sonnet-4-6",         "label": "Claude Sonnet"},
+        {"model": "claude-opus-4-6",           "label": "Claude Opus"},
     ],
     "openai": [
-        {"id": "gpt-4o-mini",   "label": "GPT-4o Mini",   "model": "gpt-4o-mini",   "complexity": "simple",  "dailyTokenGoal": 50000},
-        {"id": "gpt-4o",        "label": "GPT-4o",         "model": "gpt-4o",        "complexity": "medium",  "dailyTokenGoal": 50000},
-        {"id": "o3-mini",       "label": "o3 Mini",        "model": "o3-mini",       "complexity": "complex", "dailyTokenGoal": 50000},
+        {"model": "gpt-4o-mini", "label": "GPT-4o Mini"},
+        {"model": "gpt-4o",      "label": "GPT-4o"},
+        {"model": "o3-mini",     "label": "o3 Mini"},
     ],
     "gemini": [
-        {"id": "gemini-flash",  "label": "Gemini Flash",  "model": "gemini-2.0-flash",   "complexity": "simple",  "dailyTokenGoal": 50000},
-        {"id": "gemini-pro",    "label": "Gemini Pro",    "model": "gemini-2.0-pro-exp", "complexity": "medium",  "dailyTokenGoal": 50000},
+        {"model": "gemini-2.0-flash",   "label": "Gemini Flash"},
+        {"model": "gemini-2.0-pro-exp", "label": "Gemini Pro"},
     ],
     "groq": [
-        {"id": "groq-llama",    "label": "Groq Llama 8B", "model": "llama-3.1-8b-instant",     "complexity": "simple",  "dailyTokenGoal": 50000},
-        {"id": "groq-llama-70", "label": "Groq Llama 70B","model": "llama-3.3-70b-versatile",  "complexity": "medium",  "dailyTokenGoal": 50000},
+        {"model": "llama-3.1-8b-instant",    "label": "Llama 3.1 8B"},
+        {"model": "llama-3.3-70b-versatile", "label": "Llama 3.3 70B"},
     ],
 }
+
+# Known aggregator endpoints — any OpenAI-compatible provider
+_AGGREGATOR_ENDPOINTS = {
+    "groq":       ("https://api.groq.com/openai/v1/models",    "GROQ_API_KEY"),
+    "openai":     ("https://api.openai.com/v1/models",          "OPENAI_API_KEY"),
+    "openrouter": ("https://openrouter.ai/api/v1/models",       "OPENROUTER_API_KEY"),
+    "together":   ("https://api.together.xyz/v1/models",        "TOGETHER_API_KEY"),
+    "ollama":     ("http://localhost:11434/api/tags",            ""),
+}
+
+
+def _guess_complexity(model_id: str) -> str:
+    """Guess complexity tier from model name — size hints in model ID."""
+    mid = model_id.lower()
+    if any(x in mid for x in ["opus", "o1", "o3", "72b", "70b", "671b", "405b", "large", "pro", "ultra", "max"]):
+        return "complex"
+    if any(x in mid for x in ["sonnet", "4o", "medium", "32b", "34b", "mixtral", "gemini-pro"]):
+        return "medium"
+    return "simple"
+
+
+def _fetch_live_models(provider: str, env: dict) -> list[dict]:
+    """
+    Fetch live model list from provider or aggregator.
+    Returns list of {model, label} dicts.
+    """
+    # Anthropic — separate endpoint
+    if provider == "anthropic":
+        api_key = env.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
+        cli = _shutil.which("claude")
+        if not api_key and not cli:
+            return []
+        if api_key:
+            try:
+                resp = httpx.get(
+                    "https://api.anthropic.com/v1/models",
+                    headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                    timeout=8.0,
+                )
+                models = [{"model": m["id"], "label": m.get("display_name", m["id"])}
+                          for m in resp.json().get("data", []) if m.get("id")]
+                if models:
+                    return models
+            except Exception:
+                pass
+        return _PROVIDER_MODELS_FALLBACK.get("anthropic", [])
+
+    # Gemini
+    if provider == "gemini":
+        api_key = env.get("GEMINI_API_KEY") or env.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY", "")
+        if api_key:
+            try:
+                resp = httpx.get(
+                    f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}",
+                    timeout=8.0,
+                )
+                models = [{"model": m["name"].split("/")[-1], "label": m.get("displayName", m["name"])}
+                          for m in resp.json().get("models", [])
+                          if "generateContent" in m.get("supportedGenerationMethods", [])]
+                if models:
+                    return models
+            except Exception:
+                pass
+        return _PROVIDER_MODELS_FALLBACK.get("gemini", [])
+
+    # OpenAI-compatible aggregators (groq, openai, openrouter, together, ollama)
+    url, key_name = _AGGREGATOR_ENDPOINTS.get(provider, (None, None))
+    if not url:
+        return []
+
+    api_key = env.get(key_name) or os.environ.get(key_name, "") if key_name else ""
+
+    try:
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        resp = httpx.get(url, headers=headers, timeout=8.0)
+        data = resp.json()
+        # Ollama uses {"models": [{"name": ...}]}
+        if provider == "ollama":
+            return [{"model": m["name"], "label": m["name"]} for m in data.get("models", [])]
+        # Standard OpenAI format
+        return [{"model": m["id"], "label": m.get("name", m["id"])}
+                for m in data.get("data", []) if m.get("id")]
+    except Exception:
+        return _PROVIDER_MODELS_FALLBACK.get(provider, [])
 
 def _detect_available_providers(env: dict) -> list[str]:
     """Return list of providers the user has access to (CLI or API key)."""
@@ -346,29 +431,31 @@ def _generate_llm_config(env: dict):
         selected_providers = [available[0]]
         print(f"  Defaulting to: {selected_providers[0]}")
 
-    # Collect models from all selected providers
-    # Assign complexity tiers: first provider gets simple, last gets complex, middle gets medium
-    all_models = []
-    complexity_tiers = ["simple", "medium", "complex"]
-    for provider in selected_providers:
-        provider_models = _PROVIDER_MODELS.get(provider, [])
-        all_models.extend(provider_models)
-
-    if not all_models:
-        print("  No models found. Edit ~/.prunetool/llms_prunetoolfinder.js manually.")
-        return
-
-    # Build access method comments for each provider
+    # Collect curated models from all selected providers
+    final_models = []
     access_lines = []
+
     for provider in selected_providers:
         cli_name = "claude" if provider == "anthropic" else provider
         has_cli  = bool(_shutil.which(cli_name))
         has_api  = bool(env.get(key_map.get(provider, "")))
-        cli_status = f"✓ detected" if has_cli else "not detected"
-        api_status = f"✓ detected" if has_api else f"not set (add {key_map.get(provider, 'API_KEY')} to ~/.prunetool/.env)"
+        cli_status = "✓ detected" if has_cli else "not detected"
+        api_status = "✓ detected" if has_api else f"not set (add {key_map.get(provider, 'API_KEY')} to ~/.prunetool/.env)"
         access_lines.append(f'//   {provider}:')
         access_lines.append(f'//     CLI → {cli_name} CLI {cli_status}')
         access_lines.append(f'//     API → {key_map.get(provider, "API_KEY")} {api_status}')
+
+        for m in _PROVIDER_MODELS_FALLBACK.get(provider, []):
+            alias      = m["model"].split("/")[-1].replace(":", "-").replace(".", "-")
+            complexity = _guess_complexity(m["model"])
+            final_models.append({
+                "id": alias, "label": m["label"], "model": m["model"],
+                "complexity": complexity, "dailyTokenGoal": 50000
+            })
+
+    if not final_models:
+        print("  No models found. Edit ~/.prunetool/llms_prunetoolfinder.js manually.")
+        return
 
     provider_str = ", ".join(selected_providers)
 
@@ -383,7 +470,7 @@ def _generate_llm_config(env: dict):
         f'// To switch providers: update the provider line above and re-run prune chat.',
         "module.exports = {", "  models: ["
     ]
-    for m in models:
+    for m in final_models:
         lines.append(
             f'    {{ id: "{m["id"]}", label: "{m["label"]}", model: "{m["model"]}", '
             f'complexity: "{m["complexity"]}", dailyTokenGoal: {m["dailyTokenGoal"]} }},'
@@ -395,7 +482,7 @@ def _generate_llm_config(env: dict):
     config_path.write_text("\n".join(lines), encoding="utf-8")
 
     print(f"\n  [prune] Config saved to {config_path}")
-    print(f"  Models configured: {', '.join(m['id'] for m in models)}")
+    print(f"  Models configured: {', '.join(m['id'] for m in final_models)}")
     print(f"  Daily token limit: 50,000 per model (edit the file to change)")
     print()
 
