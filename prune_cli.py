@@ -344,8 +344,15 @@ def _generate_llm_config(env: dict):
         print(f"  No model list for {provider}. Edit ~/.prunetool/llms_prunetoolfinder.js manually.")
         return
 
+    via = "CLI subscription" if _shutil.which("claude" if provider == "anthropic" else provider) else "API key"
+
     # Write the config file
-    lines = ["module.exports = {", "  models: ["]
+    lines = [
+        f'// provider: {provider}  ({via})',
+        f'// PruneTool uses this to know how to call your LLM — via CLI or API key.',
+        f'// Change "provider" line if you switch providers.',
+        "module.exports = {", "  models: ["
+    ]
     for m in models:
         lines.append(
             f'    {{ id: "{m["id"]}", label: "{m["label"]}", model: "{m["model"]}", '
