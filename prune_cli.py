@@ -468,6 +468,76 @@ def _gateway_up() -> bool:
         return False
 
 
+def _project_index_ready() -> bool:
+    """
+    Check if the three key index files exist in the project's .prunetool/ folder.
+    These are built by a project scan — if missing, scan hasn't run yet.
+    """
+    croot = Path(os.environ.get("PRUNE_CODEBASE_ROOT", Path.cwd()))
+    pt    = croot / ".prunetool"
+    return (
+        (pt / "terminal_context.md").exists()
+        and (pt / "folder_map.json").exists()
+        and (pt / "auto_annotations.json").exists()
+    )
+
+
+def _trigger_project_scan() -> bool:
+    """POST /re-scan to gateway. Returns True if accepted."""
+    try:
+        resp = httpx.post(f"{GATEWAY_URL}/re-scan", json={}, timeout=10.0)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _wait_for_scan(timeout: float = 180.0):
+    """Poll /scan-status and print live progress until stage == complete."""
+    deadline = time.time() + timeout
+    last_msg = ""
+    while time.time() < deadline:
+        time.sleep(3)
+        try:
+            data  = httpx.get(f"{GATEWAY_URL}/scan-status", timeout=5.0).json()
+            stage = data.get("stage", "idle")
+            files = data.get("files_found", 0)
+            syms  = data.get("symbols_found", 0)
+            ann   = data.get("annotated", 0)
+            total = data.get("total_to_annotate", 0)
+
+            if stage == "scanning":
+                msg = f"  Indexing files... {files} found"
+            elif stage == "building_map":
+                msg = f"  Building folder map... {files} files, {syms} symbols"
+            elif stage == "annotating":
+                pct = int(ann / total * 100) if total else 0
+                msg = f"  Annotating files... {ann}/{total} ({pct}%)"
+            elif stage == "complete":
+                print(f"  Scan complete — {files} files, {syms} symbols indexed.\n")
+                return
+            else:
+                msg = f"  {stage}..."
+
+            if msg != last_msg:
+                print(msg, flush=True)
+                last_msg = msg
+        except Exception:
+            pass
+    print("  Scan timed out — context may be partial.\n")
+
+
+def _load_project_context() -> str:
+    """
+    Read terminal_context.md from the project's .prunetool/ folder.
+    Returns the content as a string, or empty string if not found.
+    """
+    croot = Path(os.environ.get("PRUNE_CODEBASE_ROOT", Path.cwd()))
+    ctx_path = croot / ".prunetool" / "terminal_context.md"
+    if ctx_path.exists():
+        return ctx_path.read_text(encoding="utf-8", errors="replace")
+    return ""
+
+
 def _get_pruned_context(prompt: str) -> tuple[str, int]:
     """Returns (context_text, token_estimate). Empty string if gateway down."""
     try:
@@ -831,19 +901,41 @@ def cmd_chat(config: dict, env: dict, stats: DailyStats):
     print("\n  PruneTool Chat")
     print("  " + "=" * 40)
 
+    # ── Step 1: ensure gateway is running ─────────────────────────────
     if not gw_up:
         print("  [prune] Gateway not running — starting it now...\n")
         _launch_gateway_window()
-        # Wait up to 20s for gateway to come up
         for i in range(20):
             time.sleep(1)
             if _gateway_up():
-                print("  [prune] Gateway ready. Codebase context active.\n")
+                print("  [prune] Gateway ready.\n")
                 gw_up = True
                 break
-            print(f"  [prune] Waiting for gateway{'.' * ((i % 3) + 1)}  ", end="\r")
+            print(f"  [prune] Waiting for gateway{'.' * ((i % 3) + 1)}   ", end="\r")
         if not gw_up:
-            print("\n  [prune] Gateway did not start in time — continuing without codebase context.\n")
+            print("\n  [prune] Gateway did not start — continuing without codebase context.\n")
+
+    # ── Step 2: ensure project index exists ───────────────────────────
+    project_context = ""
+    if gw_up:
+        if not _project_index_ready():
+            croot = os.environ.get("PRUNE_CODEBASE_ROOT", str(Path.cwd()))
+            print(f"  [prune] No project index found for: {croot}")
+            print(f"  [prune] Running first-time project scan...\n")
+            if _trigger_project_scan():
+                _wait_for_scan()
+            else:
+                print("  [prune] Could not trigger scan — open http://localhost:8000 and click Scan Project.\n")
+
+        # ── Step 3: load terminal_context.md into session cache ───────
+        if _project_index_ready():
+            print("  [prune] Loading project context... ", end="", flush=True)
+            project_context = _load_project_context()
+            if project_context:
+                tok_est = len(project_context) // 4
+                print(f"done (~{tok_est:,} tokens)\n")
+            else:
+                print("not found — run a project scan first.\n")
 
     # Copilot-style model picker on every session start
     chosen_alias = _model_picker(config, env, stats)
@@ -918,9 +1010,15 @@ def cmd_chat(config: dict, env: dict, stats: DailyStats):
             "You are a coding assistant with deep knowledge of the user's codebase.",
             "Answer concisely and directly. Refer to specific files and line numbers when relevant.",
         ]
+        # Layer 1: full project context loaded once at session start
+        if project_context:
+            system_parts.append(
+                f"\n## Project Overview (loaded once for this session)\n{project_context}"
+            )
+        # Layer 2: per-prompt pruned snippets — only the relevant code for this question
         if ctx_text:
             system_parts.append(
-                f"\n## Relevant Codebase Context (pruned by PruneTool)\n{ctx_text}"
+                f"\n## Relevant Code for This Question (pruned by Scout)\n{ctx_text}"
             )
 
         messages = [{"role": "system", "content": "\n".join(system_parts)}]
