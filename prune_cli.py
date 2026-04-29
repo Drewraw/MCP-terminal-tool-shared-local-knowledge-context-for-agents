@@ -22,6 +22,7 @@ import sys
 import time
 import datetime
 import hashlib
+import shutil as _shutil
 import threading
 from pathlib import Path
 from typing import Optional
@@ -261,6 +262,107 @@ def _normalize_js_models(config: dict, live: dict | None = None) -> dict:
     return result
 
 
+_PROVIDER_MODELS = {
+    "anthropic": [
+        {"id": "claude-haiku",  "label": "Claude Haiku",  "model": "claude-haiku-4-5-20251001", "complexity": "simple",  "dailyTokenGoal": 50000},
+        {"id": "claude-sonnet", "label": "Claude Sonnet", "model": "claude-sonnet-4-6",         "complexity": "medium",  "dailyTokenGoal": 50000},
+        {"id": "claude-opus",   "label": "Claude Opus",   "model": "claude-opus-4-6",           "complexity": "complex", "dailyTokenGoal": 50000},
+    ],
+    "openai": [
+        {"id": "gpt-4o-mini",   "label": "GPT-4o Mini",   "model": "gpt-4o-mini",   "complexity": "simple",  "dailyTokenGoal": 50000},
+        {"id": "gpt-4o",        "label": "GPT-4o",         "model": "gpt-4o",        "complexity": "medium",  "dailyTokenGoal": 50000},
+        {"id": "o3-mini",       "label": "o3 Mini",        "model": "o3-mini",       "complexity": "complex", "dailyTokenGoal": 50000},
+    ],
+    "gemini": [
+        {"id": "gemini-flash",  "label": "Gemini Flash",  "model": "gemini-2.0-flash",   "complexity": "simple",  "dailyTokenGoal": 50000},
+        {"id": "gemini-pro",    "label": "Gemini Pro",    "model": "gemini-2.0-pro-exp", "complexity": "medium",  "dailyTokenGoal": 50000},
+    ],
+    "groq": [
+        {"id": "groq-llama",    "label": "Groq Llama 8B", "model": "llama-3.1-8b-instant",     "complexity": "simple",  "dailyTokenGoal": 50000},
+        {"id": "groq-llama-70", "label": "Groq Llama 70B","model": "llama-3.3-70b-versatile",  "complexity": "medium",  "dailyTokenGoal": 50000},
+    ],
+}
+
+def _detect_available_providers(env: dict) -> list[str]:
+    """Return list of providers the user has access to (CLI or API key)."""
+    available = []
+    if _shutil.which("claude"):
+        available.append("anthropic")
+    elif env.get("ANTHROPIC_API_KEY"):
+        available.append("anthropic")
+    if _shutil.which("gemini"):
+        available.append("gemini")
+    elif env.get("GEMINI_API_KEY") or env.get("GOOGLE_API_KEY"):
+        available.append("gemini")
+    if env.get("OPENAI_API_KEY"):
+        available.append("openai")
+    if env.get("GROQ_API_KEY"):
+        available.append("groq")
+    return available
+
+
+def _generate_llm_config(env: dict):
+    """
+    First-time setup: detect available providers, ask user to pick one,
+    auto-generate ~/.prunetool/llms_prunetoolfinder.js with correct models.
+    """
+    available = _detect_available_providers(env)
+
+    print("\n  [prune] No model config found — let's set it up.")
+    print("  " + "=" * 40)
+
+    if not available:
+        print("  No providers detected. Add API keys to ~/.prunetool/.env")
+        print("  e.g. ANTHROPIC_API_KEY=sk-ant-...")
+        return
+
+    print("  Detected providers:")
+    for i, p in enumerate(available, 1):
+        via = "CLI" if _shutil.which("claude" if p == "anthropic" else p) else "API key"
+        print(f"    {i}. {p}  (via {via})")
+
+    print()
+    choice = input("  Pick your preferred provider (number or name): ").strip().lower()
+
+    provider = None
+    if choice.isdigit():
+        idx = int(choice) - 1
+        if 0 <= idx < len(available):
+            provider = available[idx]
+    else:
+        for p in available:
+            if choice in p or p in choice:
+                provider = p
+                break
+
+    if not provider:
+        provider = available[0]
+        print(f"  Defaulting to: {provider}")
+
+    models = _PROVIDER_MODELS.get(provider, [])
+    if not models:
+        print(f"  No model list for {provider}. Edit ~/.prunetool/llms_prunetoolfinder.js manually.")
+        return
+
+    # Write the config file
+    lines = ["module.exports = {", "  models: ["]
+    for m in models:
+        lines.append(
+            f'    {{ id: "{m["id"]}", label: "{m["label"]}", model: "{m["model"]}", '
+            f'complexity: "{m["complexity"]}", dailyTokenGoal: {m["dailyTokenGoal"]} }},'
+        )
+    lines += ["  ]", "};", ""]
+
+    PRUNETOOL_DIR.mkdir(parents=True, exist_ok=True)
+    config_path = PRUNETOOL_DIR / "llms_prunetoolfinder.js"
+    config_path.write_text("\n".join(lines), encoding="utf-8")
+
+    print(f"\n  [prune] Config saved to {config_path}")
+    print(f"  Models configured: {', '.join(m['id'] for m in models)}")
+    print(f"  Daily token limit: 50,000 per model (edit the file to change)")
+    print()
+
+
 def _load_llm_config(env: dict | None = None) -> dict:
     # Load live context cache (or fetch fresh if stale)
     live = _load_context_cache()
@@ -269,6 +371,10 @@ def _load_llm_config(env: dict | None = None) -> dict:
         if live:
             _save_context_cache(live)
             print(f"[prune] Fetched live context windows for {len(live)} models.")
+
+    user_config = PRUNETOOL_DIR / "llms_prunetoolfinder.js"
+    if not user_config.exists() and env is not None:
+        _generate_llm_config(env)
 
     for path in LLM_CONFIG_PATHS:
         if not path.exists():
@@ -580,7 +686,6 @@ def _classify_by_structure(file_count: int, active_folders: list[str]) -> str:
 
 
 # ── CLI backend (for subscription users without API keys) ─────────────
-import shutil as _shutil
 
 # Maps provider → (cli_command, prompt_flag, model_flag)
 _PROVIDER_CLI: dict[str, tuple[str, str, str]] = {
